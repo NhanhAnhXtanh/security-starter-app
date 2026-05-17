@@ -1,9 +1,11 @@
 package com.react.spring.meta.metapack.entity;
 
 import com.react.spring.common.entity.BaseEntity;
+import com.vn.security.core.security.catalog.SecuredEntity;
 import jakarta.persistence.*;
 import java.util.UUID;
 
+@SecuredEntity(jpqlAllowed = true)
 @Entity
 @Table(name = "meta_pack")
 public class MetaPack extends BaseEntity {

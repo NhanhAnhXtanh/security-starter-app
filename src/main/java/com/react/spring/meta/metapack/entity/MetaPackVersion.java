@@ -1,12 +1,14 @@
 package com.react.spring.meta.metapack.entity;
 
 import com.react.spring.common.entity.BaseEntity;
+import com.vn.security.core.security.catalog.SecuredEntity;
 import jakarta.persistence.*;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.util.UUID;
 
+@SecuredEntity(jpqlAllowed = true)
 @Entity
 @Table(name = "meta_pack_version")
 public class MetaPackVersion extends BaseEntity {

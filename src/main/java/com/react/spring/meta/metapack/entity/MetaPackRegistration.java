@@ -1,5 +1,6 @@
 package com.react.spring.meta.metapack.entity;
 
+import com.vn.security.core.security.catalog.SecuredEntity;
 import jakarta.persistence.*;
 import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.CreatedDate;
@@ -10,6 +11,7 @@ import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 
+@SecuredEntity(jpqlAllowed = true)
 @Entity
 @Table(name = "META_PACK_REGISTRATION")
 @EntityListeners(AuditingEntityListener.class)
