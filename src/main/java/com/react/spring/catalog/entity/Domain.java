@@ -1,6 +1,7 @@
 package com.react.spring.catalog.entity;
 
 import com.react.spring.common.entity.BaseEntity;
+import com.vn.security.core.security.catalog.SecuredEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -10,6 +11,7 @@ import jakarta.persistence.Table;
 
 import java.util.UUID;
 
+@SecuredEntity
 @Entity
 @Table(name = "core_domain")
 public class Domain extends BaseEntity {
