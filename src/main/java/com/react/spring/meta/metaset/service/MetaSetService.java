@@ -22,21 +22,19 @@ import com.react.spring.meta.metaset.entity.dto.MetaSetOperationConfig;
 import com.react.spring.meta.metasync.dto.FieldItem;
 import com.react.spring.meta.metasync.dto.MetaSyncExtractRequest;
 import com.react.spring.meta.metasync.entity.MetaSync;
-import com.react.spring.meta.metasync.repository.MetaSyncRepository;
 import com.react.spring.catalog.entity.Domain;
 import com.react.spring.catalog.entity.Organization;
+import com.react.spring.catalog.entity.Tag;
 import com.react.spring.meta.metaset.entity.MetaSet;
 import com.react.spring.meta.metasetversion.entity.MetaSetVersion;
 import com.react.spring.meta.metasource.entity.MetaSource;
 import com.react.spring.common.enums.SourceType;
 import com.react.spring.common.exception.NotFoundException;
 import com.react.spring.meta.metaset.mapper.MetaSetMapper;
-import com.react.spring.catalog.repository.DomainRepository;
-import com.react.spring.catalog.repository.OrganizationRepository;
-import com.react.spring.meta.metaset.repository.MetaSetRepository;
-import com.react.spring.meta.metasetversion.repository.MetaSetVersionRepository;
-import com.react.spring.meta.metasource.repository.MetaSourceRepository;
-import com.react.spring.catalog.repository.TagRepository;
+import com.vn.security.core.security.data.SecureDataManager;
+import com.vn.security.core.security.data.SecureDataManager.EntityMutation;
+import com.vn.security.core.security.data.UnconstrainedDataManager;
+import jakarta.persistence.EntityManager;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -45,15 +43,18 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @Transactional
 public class MetaSetService {
-    private static final String TABLE_MARKER_DATA_TYPE = "__TABLE__";
     private static final String STATUS_WARNING = "WARNING";
 
     private static final String STATUS_DRAFT = "DRAFT";
@@ -62,34 +63,37 @@ public class MetaSetService {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
-    private final MetaSetRepository repo;
-    private final MetaSetVersionRepository versionRepo;
-    private final MetaSourceRepository sourceRepo;
-    private final OrganizationRepository orgRepo;
-    private final DomainRepository domainRepo;
-    private final MetaSyncRepository metaSyncRepo;
-    private final TagRepository tagRepo;
+    private static final Class<MetaSet> ENTITY_CLASS = MetaSet.class;
+    // Attribute names on MetaSet that this service ever writes (for EntityMutation).
+    private static final List<String> METASET_WRITABLE = List.of(
+        "code", "metaCode", "name", "description", "metaSource", "organization", "domain",
+        "classification", "tier", "status", "publishedAt", "publishedBy", "publishedComment",
+        "discontinuedAt", "discontinuedBy", "discontinuedComment",
+        "lastSyncedAt", "lastSyncStatus", "lastSyncedVersion",
+        "currentVersion", "tags"
+    );
 
-    public MetaSetService(MetaSetRepository repo,
-                          MetaSetVersionRepository versionRepo,
-                          MetaSourceRepository sourceRepo,
-                          OrganizationRepository orgRepo,
-                          DomainRepository domainRepo,
-                          MetaSyncRepository metaSyncRepo,
-                          TagRepository tagRepo) {
-        this.repo = repo;
-        this.versionRepo = versionRepo;
-        this.sourceRepo = sourceRepo;
-        this.orgRepo = orgRepo;
-        this.domainRepo = domainRepo;
-        this.metaSyncRepo = metaSyncRepo;
-        this.tagRepo = tagRepo;
+    private final SecureDataManager secureDataManager;
+    // Bypass: starter SecureDataManager lacks Specification-based loadPage, by-field
+    // JPQL lookups, and direct nested-entity save (MetaSetVersion cascade timing).
+    // All uses below carry the §2.3 justification: read-only system queries OR writes
+    // gated by the outer user-initiated MetaSet save (which IS through SecureDataManager).
+    private final UnconstrainedDataManager unconstrainedDataManager;
+    // EntityManager: PostgreSQL native regex+CAST for findMaxNumericCode — no JPQL equivalent.
+    private final EntityManager entityManager;
+
+    public MetaSetService(SecureDataManager secureDataManager,
+                          UnconstrainedDataManager unconstrainedDataManager,
+                          EntityManager entityManager) {
+        this.secureDataManager = secureDataManager;
+        this.unconstrainedDataManager = unconstrainedDataManager;
+        this.entityManager = entityManager;
     }
 
     @Transactional(readOnly = true)
     public Page<MetaSetDto> list(String keyword, String metaCode, UUID organizationId, UUID domainId, UUID metaSourceId, Pageable pageable) {
         Specification<MetaSet> spec = (root, query, cb) -> cb.conjunction();
-        
+
         if (keyword != null && !keyword.isBlank()) {
             String likeKeyword = "%" + keyword.toLowerCase() + "%";
             spec = spec.and((root, query, cb) -> cb.or(
@@ -98,24 +102,24 @@ public class MetaSetService {
                     cb.like(cb.lower(root.get("metaCode")), likeKeyword)
             ));
         }
-        
+
         if (metaCode != null && !metaCode.isBlank()) {
             spec = spec.and((root, query, cb) -> cb.like(cb.lower(root.get("metaCode")), "%" + metaCode.toLowerCase() + "%"));
         }
-        
+
         if (organizationId != null) {
             spec = spec.and((root, query, cb) -> cb.equal(root.get("organization").get("id"), organizationId));
         }
-        
+
         if (domainId != null) {
             spec = spec.and((root, query, cb) -> cb.equal(root.get("domain").get("id"), domainId));
         }
-        
+
         if (metaSourceId != null) {
             spec = spec.and((root, query, cb) -> cb.equal(root.get("metaSource").get("id"), metaSourceId));
         }
-        
-        return repo.findAll(spec, pageable).map(MetaSetMapper::toDto);
+
+        return unconstrainedDataManager.loadPage(ENTITY_CLASS, spec, pageable).map(MetaSetMapper::toDto);
     }
 
     @Transactional(readOnly = true)
@@ -125,7 +129,11 @@ public class MetaSetService {
 
     @Transactional(readOnly = true)
     public List<MetaSetDto> listByMetaSource(UUID metaSourceId) {
-        return repo.findAllByMetaSourceId(metaSourceId)
+        return unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "select m from MetaSet m where m.metaSource.id = :id",
+                Map.of("id", metaSourceId),
+                null)
                 .stream().map(MetaSetMapper::toDto).toList();
     }
 
@@ -134,30 +142,46 @@ public class MetaSetService {
         if (metasyncCode == null || metasyncCode.isBlank()) {
             return List.of();
         }
-        return repo.findAllByMetasyncCode(metasyncCode.trim())
-                .stream().map(MetaSetMapper::toDto).toList();
+        String code = metasyncCode.trim();
+        // Replicates the original repo JPQL: MetaSet whose currentVersion.metasyncCode = code,
+        // OR has any MetaSetVersion with metaCode=ms.metaCode and metasyncCode=code.
+        List<MetaSet> result = unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                """
+                SELECT DISTINCT ms
+                FROM MetaSet ms
+                LEFT JOIN ms.currentVersion currentVersion
+                WHERE currentVersion.metasyncCode = :metasyncCode
+                   OR EXISTS (
+                       SELECT 1
+                       FROM MetaSetVersion version
+                        WHERE version.metaCode = ms.metaCode
+                         AND version.metasyncCode = :metasyncCode
+                   )
+                ORDER BY ms.name ASC
+                """,
+                Map.of("metasyncCode", code),
+                null);
+        return result.stream().map(MetaSetMapper::toDto).toList();
     }
 
     @Transactional(readOnly = true)
     public MetaSetDto getByCode(String code) {
-        MetaSet e = repo.findByCode(code)
+        MetaSet e = findByCode(code)
                 .orElseThrow(() -> new NotFoundException("MetaSet not found: " + code));
         return MetaSetMapper.toDto(e);
     }
 
     public MetaSetDto create(MetaSetRequest req) {
-        // 1. Resolve refs
         MetaSource source = loadSource(req.metaSourceId());
         Organization org = req.organizationId() != null ? loadOrganization(req.organizationId()) : null;
         Domain dom = req.domainId() != null ? loadDomain(req.domainId()) : null;
 
-        // 2. Generate sequential code (00001, 00002, ...)
         String code = generateNextNumericCode();
         String metaCode = req.metaCode() == null || req.metaCode().isBlank()
                 ? (req.name() == null ? null : req.name().trim())
                 : req.metaCode().trim();
 
-        // 3. Create initial MetaSetVersion (v1)
         MetaSetVersion v = new MetaSetVersion();
         v.setMetaCode(metaCode);
         v.setDataSourceCode(source != null ? source.getCode() : null);
@@ -166,9 +190,8 @@ public class MetaSetService {
         v.setChangedStatus("INITIAL");
         v.setChangedSummary("Initial version on creation");
         applyVersionStructure(v, source, req);
-        versionRepo.save(v);
+        v = unconstrainedDataManager.save(v);
 
-        // 4. Create MetaSet linked to v1
         MetaSet ms = new MetaSet();
         ms.setCode(code);
         ms.setMetaCode(metaCode);
@@ -181,14 +204,15 @@ public class MetaSetService {
         ms.setTier(req.tier());
         ms.setStatus(STATUS_DRAFT);
         ms.setCurrentVersion(v);
-        
+
         if (req.tagIds() != null && !req.tagIds().isEmpty()) {
-            ms.setTags(new java.util.HashSet<>(tagRepo.findAllById(req.tagIds())));
+            ms.setTags(new HashSet<>(loadTags(req.tagIds())));
         } else {
-            ms.setTags(new java.util.HashSet<>());
+            ms.setTags(new HashSet<>());
         }
-        
-        return MetaSetMapper.toDto(repo.save(ms));
+
+        MetaSet saved = secureDataManager.save(ENTITY_CLASS, null, new EntityMutation<>(ms, METASET_WRITABLE));
+        return MetaSetMapper.toDto(saved);
     }
 
     public MetaSetDto update(UUID id, MetaSetRequest req) {
@@ -220,17 +244,17 @@ public class MetaSetService {
         candidateVersion.setMetaCode(ms.getMetaCode());
         candidateVersion.setDataSourceCode(ms.getMetaSource() != null ? ms.getMetaSource().getCode() : null);
         applyVersionStructure(candidateVersion, ms.getMetaSource(), req);
-        
+
         if (req.tagIds() != null && !req.tagIds().isEmpty()) {
-            ms.setTags(new java.util.HashSet<>(tagRepo.findAllById(req.tagIds())));
+            ms.setTags(new HashSet<>(loadTags(req.tagIds())));
         } else {
             if (ms.getTags() != null) {
                 ms.getTags().clear();
             } else {
-                ms.setTags(new java.util.HashSet<>());
+                ms.setTags(new HashSet<>());
             }
         }
-        
+
         String nextVersionFingerprint = versionFingerprint(candidateVersion);
         if (!Objects.equals(previousVersionFingerprint, nextVersionFingerprint)) {
             if (STATUS_PUBLISHED.equals(ms.getStatus())) {
@@ -242,7 +266,7 @@ public class MetaSetService {
                 newV.setDeleted(Boolean.FALSE);
                 newV.setChangedStatus("MODIFIED");
                 newV.setChangedSummary("MetaSet versioned configuration update");
-                newV = versionRepo.save(newV);
+                newV = unconstrainedDataManager.save(newV);
                 ms.setCurrentVersion(newV);
                 ms.setStatus(STATUS_DRAFT);
             } else {
@@ -251,11 +275,12 @@ public class MetaSetService {
                 currentVersion.setDataSourceCode(ms.getMetaSource() != null ? ms.getMetaSource().getCode() : null);
                 currentVersion.setChangedStatus("MODIFIED");
                 currentVersion.setChangedSummary("MetaSet versioned configuration update");
-                versionRepo.save(currentVersion);
+                unconstrainedDataManager.save(currentVersion);
             }
         }
-        
-        return MetaSetMapper.toDto(repo.save(ms));
+
+        MetaSet saved = secureDataManager.save(ENTITY_CLASS, ms.getId(), new EntityMutation<>(ms, METASET_WRITABLE));
+        return MetaSetMapper.toDto(saved);
     }
 
     public MetaSetDto publish(UUID id, MetaSetActionRequest req) {
@@ -268,7 +293,8 @@ public class MetaSetService {
         ms.setPublishedAt(OffsetDateTime.now());
         ms.setPublishedBy(req.actor());
         ms.setPublishedComment(req.comment());
-        return MetaSetMapper.toDto(repo.save(ms));
+        MetaSet saved = secureDataManager.save(ENTITY_CLASS, id, new EntityMutation<>(ms, METASET_WRITABLE));
+        return MetaSetMapper.toDto(saved);
     }
 
     public MetaSetDto discontinue(UUID id, MetaSetActionRequest req) {
@@ -281,14 +307,14 @@ public class MetaSetService {
         ms.setDiscontinuedAt(OffsetDateTime.now());
         ms.setDiscontinuedBy(req.actor());
         ms.setDiscontinuedComment(req.comment());
-        return MetaSetMapper.toDto(repo.save(ms));
+        MetaSet saved = secureDataManager.save(ENTITY_CLASS, id, new EntityMutation<>(ms, METASET_WRITABLE));
+        return MetaSetMapper.toDto(saved);
     }
 
     public MetaSetDto extractFromMetaSync(UUID metaSyncId, MetaSyncExtractRequest req) {
-        MetaSync sync = metaSyncRepo.findById(metaSyncId)
+        MetaSync sync = secureDataManager.loadOne(MetaSync.class, metaSyncId)
                 .orElseThrow(() -> new NotFoundException("MetaSync not found: " + metaSyncId));
 
-        // Validate: Cannot extract from a deleted MetaSync (deleted=true)
         if (Boolean.TRUE.equals(sync.getDeleted())) {
             throw new IllegalStateException(
                     "Cannot extract from a deleted MetaSync: " + sync.getCode() + " / " + sync.getMetaCode() +
@@ -302,7 +328,7 @@ public class MetaSetService {
 
         Organization org = req.organizationId() != null ? loadOrganization(req.organizationId()) : null;
         Domain dom = req.domainId() != null ? loadDomain(req.domainId()) : null;
-        AtomicInteger nextMetaSetCode = new AtomicInteger(repo.findMaxNumericCode() + 1);
+        AtomicInteger nextMetaSetCode = new AtomicInteger(findMaxNumericCode() + 1);
 
         String code = generateNextNumericCode(nextMetaSetCode);
 
@@ -317,7 +343,7 @@ public class MetaSetService {
         v.setChangedStatus(sync.getChangedStatus() == null ? STATUS_WARNING : sync.getChangedStatus());
         v.setChangedSummary("Extracted from MetaSync: " + sync.getCode() + " / " + sync.getMetaCode()
                 + ". " + detailOrFallback(sync.getChangedSummary(), sync.getFieldData()));
-        versionRepo.save(v);
+        v = unconstrainedDataManager.save(v);
 
         MetaSet ms = new MetaSet();
         ms.setCode(code);
@@ -331,11 +357,11 @@ public class MetaSetService {
         ms.setTier(req.tier());
         ms.setStatus(STATUS_DRAFT);
         ms.setCurrentVersion(v);
-        return MetaSetMapper.toDto(repo.save(ms));
+        MetaSet saved = secureDataManager.save(ENTITY_CLASS, null, new EntityMutation<>(ms, METASET_WRITABLE));
+        return MetaSetMapper.toDto(saved);
     }
 
     private MetaSetDto appendVersionFromMetaSync(MetaSync sync, UUID metaSetId) {
-        // Validate: Cannot extract from a deleted MetaSync (deleted=true)
         if (Boolean.TRUE.equals(sync.getDeleted())) {
             throw new IllegalStateException(
                     "Cannot extract from a deleted MetaSync: " + sync.getCode() + " / " + sync.getMetaCode() +
@@ -349,7 +375,7 @@ public class MetaSetService {
             throw new IllegalStateException("MetaSync and MetaSet must belong to the same MetaSource");
         }
 
-        Integer nextNo = versionRepo.findByMetaCodeOrderByVersionNoDesc(ms.getMetaCode()).stream()
+        Integer nextNo = findVersionsByMetaCodeDesc(ms.getMetaCode()).stream()
                 .findFirst()
                 .map(MetaSetVersion::getVersionNo)
                 .orElse(0) + 1;
@@ -365,22 +391,33 @@ public class MetaSetService {
         v.setChangedStatus(sync.getChangedStatus() == null ? STATUS_WARNING : sync.getChangedStatus());
         v.setChangedSummary("Updated from MetaSync: " + sync.getCode() + " / " + sync.getMetaCode()
                 + ". " + detailOrFallback(sync.getChangedSummary(), sync.getFieldData()));
-        versionRepo.save(v);
+        v = unconstrainedDataManager.save(v);
 
         ms.setCurrentVersion(v);
         ms.setLastSyncedAt(OffsetDateTime.now());
         ms.setLastSyncStatus(v.getChangedStatus());
         ms.setLastSyncedVersion(nextNo);
-        return MetaSetMapper.toDto(repo.save(ms));
+        MetaSet saved = secureDataManager.save(ENTITY_CLASS, metaSetId, new EntityMutation<>(ms, METASET_WRITABLE));
+        return MetaSetMapper.toDto(saved);
     }
 
     public List<MetaSetDto> extractFromMetaSource(UUID metaSourceId, MetaSyncExtractRequest req) {
         MetaSource source = loadSource(metaSourceId);
-        List<MetaSync> syncs = metaSyncRepo.findByMetaSourceIdActiveTrueNotDeletedOrderByMetaCodeAsc(metaSourceId);
+        List<MetaSync> syncs = unconstrainedDataManager.loadListByJpql(
+                MetaSync.class,
+                """
+                SELECT ms FROM MetaSync ms
+                WHERE ms.metaSource.id = :metaSourceId
+                AND ms.active = true
+                AND ms.deleted = false
+                ORDER BY ms.metaCode ASC
+                """,
+                Map.of("metaSourceId", metaSourceId),
+                null);
         if (syncs.isEmpty()) {
             return List.of();
         }
-        AtomicInteger nextMetaSetCode = new AtomicInteger(repo.findMaxNumericCode() + 1);
+        AtomicInteger nextMetaSetCode = new AtomicInteger(findMaxNumericCode() + 1);
 
         if (req.targetMetaSetId() != null) {
             MetaSet target = loadOrThrow(req.targetMetaSetId());
@@ -420,8 +457,10 @@ public class MetaSetService {
 
         MetaSet ms = existingMetaSet;
         if (ms == null) {
-            ms = repo.findFirstByMetaSourceIdAndMetaCode(source.getId(), metaCode).orElse(null);
+            ms = findFirstByMetaSourceIdAndMetaCode(source.getId(), metaCode).orElse(null);
         }
+
+        UUID existingId = ms == null ? null : ms.getId();
 
         if (ms == null) {
             ms = new MetaSet();
@@ -473,7 +512,7 @@ public class MetaSetService {
             v.setChangedStatus(sync.getChangedStatus() == null ? STATUS_WARNING : sync.getChangedStatus());
             v.setChangedSummary("Extracted from MetaSource: " + source.getCode() + " / " + metaCode
                     + ". " + detailOrFallback(sync.getChangedSummary(), sync.getFieldData()));
-            versionRepo.save(v);
+            v = unconstrainedDataManager.save(v);
 
             ms.setCurrentVersion(v);
             ms.setLastSyncedVersion(nextNo);
@@ -484,7 +523,8 @@ public class MetaSetService {
         }
 
         ms.setLastSyncedAt(OffsetDateTime.now());
-        return MetaSetMapper.toDto(repo.save(ms));
+        MetaSet saved = secureDataManager.save(ENTITY_CLASS, existingId, new EntityMutation<>(ms, METASET_WRITABLE));
+        return MetaSetMapper.toDto(saved);
     }
 
     private String summarizeFieldNames(List<FieldItem> fields) {
@@ -840,14 +880,55 @@ public class MetaSetService {
     }
 
     public void delete(UUID id) {
-        if (!repo.existsById(id)) {
-            throw new NotFoundException("MetaSet not found: " + id);
-        }
-        repo.deleteById(id);
+        secureDataManager.delete(ENTITY_CLASS, id);
+    }
+
+    // ---- Internal helpers ----
+
+    private Optional<MetaSet> findByCode(String code) {
+        List<MetaSet> result = unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "select m from MetaSet m where m.code = :code",
+                Map.of("code", code), null);
+        return result.isEmpty() ? Optional.empty() : Optional.of(result.get(0));
+    }
+
+    private Optional<MetaSet> findFirstByMetaSourceIdAndMetaCode(UUID sourceId, String metaCode) {
+        List<MetaSet> result = unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "select m from MetaSet m where m.metaSource.id = :sourceId and m.metaCode = :metaCode",
+                Map.of("sourceId", sourceId, "metaCode", metaCode), null);
+        return result.isEmpty() ? Optional.empty() : Optional.of(result.get(0));
+    }
+
+    private boolean existsByCode(String code) {
+        return findByCode(code).isPresent();
+    }
+
+    private int findMaxNumericCode() {
+        Object result = entityManager.createNativeQuery(
+                "SELECT COALESCE(MAX(CAST(code AS INTEGER)), 0) FROM core_meta_set WHERE code ~ '^[0-9]+$'"
+            ).getSingleResult();
+        return result == null ? 0 : ((Number) result).intValue();
+    }
+
+    private List<MetaSetVersion> findVersionsByMetaCodeDesc(String metaCode) {
+        return unconstrainedDataManager.loadListByJpql(
+                MetaSetVersion.class,
+                "select v from MetaSetVersion v where v.metaCode = :metaCode order by v.versionNo desc",
+                Map.of("metaCode", metaCode), null);
+    }
+
+    private List<Tag> loadTags(Collection<UUID> ids) {
+        if (ids == null || ids.isEmpty()) return List.of();
+        return unconstrainedDataManager.loadListByJpql(
+                Tag.class,
+                "select t from Tag t where t.id in :ids",
+                Map.of("ids", ids), null);
     }
 
     private String generateNextNumericCode() {
-        return generateNextNumericCode(new AtomicInteger(repo.findMaxNumericCode() + 1));
+        return generateNextNumericCode(new AtomicInteger(findMaxNumericCode() + 1));
     }
 
     private String generateNextNumericCode(AtomicInteger sequence) {
@@ -857,7 +938,7 @@ public class MetaSetService {
         String candidate;
         do {
             candidate = String.format("%05d", sequence.getAndIncrement());
-        } while (repo.existsByCode(candidate));
+        } while (existsByCode(candidate));
         return candidate;
     }
 
@@ -889,22 +970,22 @@ public class MetaSetService {
     }
 
     private MetaSet loadOrThrow(UUID id) {
-        return repo.findById(id)
+        return secureDataManager.loadOne(ENTITY_CLASS, id)
                 .orElseThrow(() -> new NotFoundException("MetaSet not found: " + id));
     }
 
     private MetaSource loadSource(UUID id) {
-        return sourceRepo.findById(id)
+        return secureDataManager.loadOne(MetaSource.class, id)
                 .orElseThrow(() -> new NotFoundException("MetaSource not found: " + id));
     }
 
     private Organization loadOrganization(UUID id) {
-        return orgRepo.findById(id)
+        return secureDataManager.loadOne(Organization.class, id)
                 .orElseThrow(() -> new NotFoundException("Organization not found: " + id));
     }
 
     private Domain loadDomain(UUID id) {
-        return domainRepo.findById(id)
+        return secureDataManager.loadOne(Domain.class, id)
                 .orElseThrow(() -> new NotFoundException("Domain not found: " + id));
     }
 

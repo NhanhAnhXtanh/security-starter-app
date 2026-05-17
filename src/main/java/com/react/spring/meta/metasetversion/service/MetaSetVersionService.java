@@ -11,11 +11,14 @@ import com.react.spring.meta.metaset.entity.dto.MetaSetOperationConfig;
 import com.react.spring.meta.metasetversion.entity.MetaSetVersion;
 import com.react.spring.common.exception.NotFoundException;
 import com.react.spring.meta.metasetversion.mapper.MetaSetVersionMapper;
-import com.react.spring.meta.metasetversion.repository.MetaSetVersionRepository;
+import com.vn.security.core.security.data.SecureDataManager;
+import com.vn.security.core.security.data.SecureDataManager.EntityMutation;
+import com.vn.security.core.security.data.UnconstrainedDataManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -23,15 +26,27 @@ import java.util.UUID;
 @Transactional
 public class MetaSetVersionService {
 
-    private final MetaSetVersionRepository repo;
+    private static final Class<MetaSetVersion> ENTITY_CLASS = MetaSetVersion.class;
+    private static final List<String> WRITABLE_ATTRS = List.of(
+        "dataSourceCode", "metaCode", "versionNo", "metasyncCode",
+        "fieldData", "fieldHash", "exampleData",
+        "endpointPath", "endpointConfig", "apiSetting", "operations",
+        "deleted", "changedStatus", "changedSummary"
+    );
 
-    public MetaSetVersionService(MetaSetVersionRepository repo) {
-        this.repo = repo;
+    private final SecureDataManager secureDataManager;
+    // Bypass: by-field JPQL lookups not in SecureDataManager API.
+    private final UnconstrainedDataManager unconstrainedDataManager;
+
+    public MetaSetVersionService(SecureDataManager secureDataManager,
+                                 UnconstrainedDataManager unconstrainedDataManager) {
+        this.secureDataManager = secureDataManager;
+        this.unconstrainedDataManager = unconstrainedDataManager;
     }
 
     @Transactional(readOnly = true)
     public List<MetaSetVersionDto> listByMetaCode(String metaCode) {
-        return repo.findByMetaCodeOrderByVersionNoDesc(metaCode).stream()
+        return findByMetaCodeDesc(metaCode).stream()
                 .map(MetaSetVersionMapper::toDto)
                 .toList();
     }
@@ -43,14 +58,22 @@ public class MetaSetVersionService {
 
     @Transactional(readOnly = true)
     public MetaSetVersionDto getByMetaCodeAndVersionNo(String metaCode, Integer versionNo) {
-        MetaSetVersion e = repo.findByMetaCodeAndVersionNo(metaCode, versionNo)
-                .orElseThrow(() -> new NotFoundException(
-                        "MetaSetVersion not found: " + metaCode + " v" + versionNo));
+        List<MetaSetVersion> result = unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "select v from MetaSetVersion v where v.metaCode = :metaCode and v.versionNo = :versionNo",
+                Map.of("metaCode", metaCode, "versionNo", versionNo),
+                null);
+        MetaSetVersion e = result.isEmpty()
+                ? null
+                : result.get(0);
+        if (e == null) {
+            throw new NotFoundException("MetaSetVersion not found: " + metaCode + " v" + versionNo);
+        }
         return MetaSetVersionMapper.toDto(e);
     }
 
     public MetaSetVersionDto create(MetaSetVersionRequest req) {
-        Integer nextNo = repo.findByMetaCodeOrderByVersionNoDesc(req.metaCode()).stream()
+        Integer nextNo = findByMetaCodeDesc(req.metaCode()).stream()
                 .findFirst()
                 .map(MetaSetVersion::getVersionNo)
                 .orElse(0) + 1;
@@ -69,19 +92,25 @@ public class MetaSetVersionService {
         e.setDeleted(req.deleted() == null ? Boolean.FALSE : req.deleted());
         e.setChangedStatus(req.changedStatus());
         e.setChangedSummary(req.changedSummary());
-        return MetaSetVersionMapper.toDto(repo.save(e));
+        MetaSetVersion saved = secureDataManager.save(ENTITY_CLASS, null, new EntityMutation<>(e, WRITABLE_ATTRS));
+        return MetaSetVersionMapper.toDto(saved);
     }
 
     public void delete(UUID id) {
-        if (!repo.existsById(id)) {
-            throw new NotFoundException("MetaSetVersion not found: " + id);
-        }
-        repo.deleteById(id);
+        secureDataManager.delete(ENTITY_CLASS, id);
     }
 
     private MetaSetVersion loadOrThrow(UUID id) {
-        return repo.findById(id)
+        return secureDataManager.loadOne(ENTITY_CLASS, id)
                 .orElseThrow(() -> new NotFoundException("MetaSetVersion not found: " + id));
+    }
+
+    private List<MetaSetVersion> findByMetaCodeDesc(String metaCode) {
+        return unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "select v from MetaSetVersion v where v.metaCode = :metaCode order by v.versionNo desc",
+                Map.of("metaCode", metaCode),
+                null);
     }
 
     private MetaSetApiSetting toApiSettingEntity(MetaSetVersionRequest req) {

@@ -3,6 +3,7 @@ package com.react.spring.meta.metasetversion.entity;
 import com.react.spring.common.entity.BaseEntity;
 import com.react.spring.meta.metaset.entity.MetaSetApiSetting;
 import com.react.spring.meta.metaset.entity.MetaSetOperation;
+import com.vn.security.core.security.catalog.SecuredEntity;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -21,6 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+@SecuredEntity(jpqlAllowed = true)
 @Entity
 @Table(name = "core_meta_set_version", uniqueConstraints = {
         @UniqueConstraint(

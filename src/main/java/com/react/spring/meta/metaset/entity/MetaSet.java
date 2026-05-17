@@ -5,6 +5,7 @@ import com.react.spring.catalog.entity.Domain;
 import com.react.spring.catalog.entity.Organization;
 import com.react.spring.meta.metasetversion.entity.MetaSetVersion;
 import com.react.spring.meta.metasource.entity.MetaSource;
+import com.vn.security.core.security.catalog.SecuredEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -21,6 +22,7 @@ import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 
+@SecuredEntity(jpqlAllowed = true)
 @Entity
 @Table(name = "core_meta_set")
 public class MetaSet extends BaseEntity {
