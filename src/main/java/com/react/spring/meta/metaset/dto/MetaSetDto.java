@@ -1,0 +1,41 @@
+package com.react.spring.meta.metaset.dto;
+
+import java.time.OffsetDateTime;
+import java.util.UUID;
+
+public record MetaSetDto(
+        UUID id,
+        String code,
+        String metaCode,
+        String name,
+        String description,
+        UUID metaSourceId,
+        String metaSourceCode,
+        String metaSourceName,
+        UUID organizationId,
+        String organizationName,
+        UUID domainId,
+        String domainName,
+        String classification,
+        String tier,
+        String status,
+        OffsetDateTime publishedAt,
+        String publishedBy,
+        String publishedComment,
+        OffsetDateTime discontinuedAt,
+        String discontinuedBy,
+        String discontinuedComment,
+        OffsetDateTime lastSyncedAt,
+        String lastSyncStatus,
+        Integer lastSyncedVersion,
+        String exampleData,
+        String endpointPath,
+        MetaSetEndpointConfigDto endpointConfig,
+        MetaSetApiSettingDto apiSetting,
+        java.util.List<MetaSetApiOperationDto> operations,
+        UUID currentVersionId,
+        Integer currentVersionNo,
+        OffsetDateTime createdDate,
+        OffsetDateTime lastModifiedDate,
+        java.util.List<com.react.spring.catalog.dto.TagDto> tags
+) {}
