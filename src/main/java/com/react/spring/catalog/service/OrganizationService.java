@@ -15,7 +15,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 import java.util.UUID;
 
-@Service
+// Distinct bean name — starter ships its own com.vn.security.core.service.OrganizationService.
+@Service("appOrganizationService")
 @Transactional
 public class OrganizationService {
 

@@ -11,8 +11,10 @@ import jakarta.persistence.Table;
 
 import java.util.UUID;
 
-@SecuredEntity
-@Entity
+// Starter also ships com.vn.security.core.domain.Organization (demo entity).
+// Override JPA entity name + secured-entity code so both can coexist.
+@SecuredEntity(code = "app-organization")
+@Entity(name = "AppOrganization")
 @Table(name = "core_organization")
 public class Organization extends BaseEntity {
 
