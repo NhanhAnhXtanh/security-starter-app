@@ -8,27 +8,33 @@ import com.react.spring.meta.metasync.dto.MetaSyncRequest;
 import com.react.spring.meta.metasource.connect.db.dto.SchemaDto;
 import com.react.spring.meta.metasource.connect.db.dto.SyncResultDto;
 import com.react.spring.meta.metasource.entity.MetaSource;
+import com.react.spring.meta.metaset.entity.MetaSet;
+import com.react.spring.meta.metasetversion.entity.MetaSetVersion;
 import com.react.spring.meta.metasync.entity.MetaSync;
 import com.react.spring.common.exception.NotFoundException;
 import com.react.spring.meta.metasync.mapper.MetaSyncMapper;
-import com.react.spring.meta.metaset.repository.MetaSetRepository;
-import com.react.spring.meta.metasource.repository.MetaSourceRepository;
-import com.react.spring.meta.metasync.repository.MetaSyncRepository;
-import com.react.spring.meta.metasetversion.repository.MetaSetVersionRepository;
 import com.react.spring.meta.metasource.connect.db.MetaSourceConnectionService;
 import com.react.spring.common.utils.FieldHashUtils;
 import com.react.spring.common.utils.SlugUtils;
+import com.vn.security.core.security.data.SecureDataManager;
+import com.vn.security.core.security.data.SecureDataManager.EntityMutation;
+import com.vn.security.core.security.data.UnconstrainedDataManager;
+import jakarta.persistence.EntityManager;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -44,41 +50,65 @@ public class MetaSyncService {
     private static final String SYNC_MODE_ONLINE = "ONLINE";
     private static final String SYNC_MODE_OFFLINE = "OFFLINE";
 
-    private final MetaSyncRepository repo;
-    private final MetaSourceRepository sourceRepo;
-    private final MetaSetRepository metaSetRepo;
-    private final MetaSetVersionRepository metaSetVersionRepo;
+    private static final Class<MetaSync> ENTITY_CLASS = MetaSync.class;
+    private static final List<String> WRITABLE_ATTRS = List.of(
+        "code", "status", "metaSource", "metaCode", "metaName",
+        "fieldData", "fieldHash", "deleted", "active",
+        "versionNo", "changedStatus", "changedSummary"
+    );
+
+    private final SecureDataManager secureDataManager;
+    // Bypass: starter has no Specification-based filter, no by-field lookups,
+    // no @Modifying UPDATE/DELETE. All uses below are read-only system queries
+    // OR writes that already passed an upstream SecureDataManager check
+    // (per rules/data-access.md §2.3).
+    private final UnconstrainedDataManager unconstrainedDataManager;
+    // EntityManager: PostgreSQL native (regex/CAST for code), JPQL @Modifying UPDATE
+    // for bulk deactivate (no equivalent in starter API).
+    private final EntityManager entityManager;
     private final MetaSourceConnectionService connectionService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public MetaSyncService(MetaSyncRepository repo,
-                           MetaSourceRepository sourceRepo,
-                           MetaSetRepository metaSetRepo,
-                           MetaSetVersionRepository metaSetVersionRepo,
+    public MetaSyncService(SecureDataManager secureDataManager,
+                           UnconstrainedDataManager unconstrainedDataManager,
+                           EntityManager entityManager,
                            MetaSourceConnectionService connectionService) {
-        this.repo = repo;
-        this.sourceRepo = sourceRepo;
-        this.metaSetRepo = metaSetRepo;
-        this.metaSetVersionRepo = metaSetVersionRepo;
+        this.secureDataManager = secureDataManager;
+        this.unconstrainedDataManager = unconstrainedDataManager;
+        this.entityManager = entityManager;
         this.connectionService = connectionService;
     }
 
-    // ...existing code...
     @Transactional(readOnly = true)
     public Page<MetaSyncDto> list(UUID dataSourceId, UUID organizationId, UUID domainId, String keyword, Pageable pageable) {
         String kw = (keyword == null || keyword.isBlank()) ? null : keyword.trim();
-        Page<MetaSync> page = kw == null
-                ? repo.findWithFilters(dataSourceId, organizationId, domainId, pageable)
-                : repo.findWithFiltersAndKeyword(dataSourceId, organizationId, domainId, kw, pageable);
-        return page
-                .map(MetaSyncMapper::toDto);
+        Specification<MetaSync> spec = (root, query, cb) -> cb.equal(root.get("active"), Boolean.TRUE);
+        if (dataSourceId != null) {
+            spec = spec.and((root, query, cb) -> cb.equal(root.get("metaSource").get("id"), dataSourceId));
+        }
+        if (organizationId != null) {
+            spec = spec.and((root, query, cb) -> cb.equal(root.get("metaSource").get("organization").get("id"), organizationId));
+        }
+        if (domainId != null) {
+            spec = spec.and((root, query, cb) -> cb.equal(root.get("metaSource").get("domain").get("id"), domainId));
+        }
+        if (kw != null) {
+            String like = "%" + kw.toLowerCase() + "%";
+            spec = spec.and((root, query, cb) -> cb.or(
+                    cb.like(cb.lower(root.get("metaName")), like),
+                    cb.like(cb.lower(root.get("code")), like)
+            ));
+        }
+        return unconstrainedDataManager.loadPage(ENTITY_CLASS, spec, pageable).map(MetaSyncMapper::toDto);
     }
 
     @Transactional(readOnly = true)
     public List<MetaSyncDto> listBySource(UUID metaSourceId) {
-        return repo.findByMetaSourceIdAndActiveTrueOrderByMetaCodeAsc(metaSourceId).stream()
-                .map(MetaSyncMapper::toDto)
-                .toList();
+        return unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "select s from MetaSync s where s.metaSource.id = :id and s.active = true order by s.metaCode asc",
+                Map.of("id", metaSourceId), null)
+                .stream().map(MetaSyncMapper::toDto).toList();
     }
 
     @Transactional(readOnly = true)
@@ -88,8 +118,12 @@ public class MetaSyncService {
 
     @Transactional(readOnly = true)
     public MetaSyncDto getByCode(String code) {
-        MetaSync e = repo.findFirstByCodeAndActiveTrueOrderByMetaCodeAscVersionNoDesc(code)
-                .orElseThrow(() -> new NotFoundException("MetaSync not found: " + code));
+        List<MetaSync> r = unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "select s from MetaSync s where s.code = :code and s.active = true order by s.metaCode asc, s.versionNo desc",
+                Map.of("code", code), null);
+        MetaSync e = r.isEmpty() ? null : r.get(0);
+        if (e == null) throw new NotFoundException("MetaSync not found: " + code);
         return MetaSyncMapper.toDto(e);
     }
 
@@ -102,34 +136,53 @@ public class MetaSyncService {
             e.setCode(generateNextNumericCode());
         }
         deactivatePeersWhenActive(e, null);
-        return MetaSyncMapper.toDto(repo.save(e));
+        MetaSync saved = secureDataManager.save(ENTITY_CLASS, null, new EntityMutation<>(e, WRITABLE_ATTRS));
+        return MetaSyncMapper.toDto(saved);
     }
 
     public MetaSyncDto update(UUID id, MetaSyncRequest req) {
         MetaSync e = loadOrThrow(id);
         applyRequest(e, req);
         deactivatePeersWhenActive(e, id);
-        return MetaSyncMapper.toDto(repo.save(e));
+        MetaSync saved = secureDataManager.save(ENTITY_CLASS, id, new EntityMutation<>(e, WRITABLE_ATTRS));
+        return MetaSyncMapper.toDto(saved);
     }
 
     public void delete(UUID id) {
         MetaSync sync = loadOrThrow(id);
         String metaSyncCode = sync.getCode();
 
-        // Cascade delete: remove all MetaSets and MetaSetVersions that were extracted from this MetaSync
+        // Cascade delete: remove all MetaSets and MetaSetVersions extracted from this MetaSync.
+        // System-internal bulk delete — JPA @Modifying via EntityManager.
         if (metaSyncCode != null && !metaSyncCode.isBlank()) {
-            // Delete all MetaSetVersions that reference this MetaSync
-            metaSetVersionRepo.deleteByMetasyncCode(metaSyncCode);
-
-            // Delete all MetaSets that were extracted from this MetaSync
-            metaSetRepo.deleteAllByMetasyncCode(metaSyncCode);
+            entityManager.createQuery(
+                    "DELETE FROM MetaSetVersion v WHERE v.metasyncCode = :metasyncCode")
+                .setParameter("metasyncCode", metaSyncCode)
+                .executeUpdate();
+            entityManager.createQuery(
+                    """
+                    DELETE FROM MetaSet ms
+                    WHERE ms.id IN (
+                        SELECT DISTINCT ms2.id
+                        FROM MetaSet ms2
+                        LEFT JOIN ms2.currentVersion currentVersion
+                        WHERE currentVersion.metasyncCode = :metasyncCode
+                           OR EXISTS (
+                               SELECT 1
+                               FROM MetaSetVersion version
+                                WHERE version.metaCode = ms2.metaCode
+                                  AND version.metasyncCode = :metasyncCode
+                           )
+                    )
+                    """)
+                .setParameter("metasyncCode", metaSyncCode)
+                .executeUpdate();
+            entityManager.clear();
         }
 
-        // Finally delete the MetaSync itself
-        repo.deleteById(id);
+        secureDataManager.delete(ENTITY_CLASS, id);
     }
 
-    // ...existing code...
     public SyncResultDto initSync(UUID metaSourceId) {
         MetaSource source = loadSource(metaSourceId);
         SchemaDto schema;
@@ -150,18 +203,17 @@ public class MetaSyncService {
             String fieldDataJson = serializeFields(fields);
             String structuralHash = FieldHashUtils.structural(fields);
 
-            // Dùng OrderByVersionNoDesc để tìm version mới nhất bất kể active=null/false/true
-            MetaSync latest = repo.findFirstByMetaSourceIdAndMetaCodeOrderByVersionNoDesc(metaSourceId, table.name())
-                    .orElse(null);
+            MetaSync latest = findLatestByMetaSourceAndMetaCode(metaSourceId, table.name()).orElse(null);
 
             if (latest != null
                     && !Boolean.TRUE.equals(latest.getDeleted())
                     && Objects.equals(latest.getFieldHash(), structuralHash)) {
-                // Đảm bảo version hiện tại luôn được đánh dấu active (fix null records cũ)
                 if (!Boolean.TRUE.equals(latest.getActive()) || STATUS_OFFLINE.equals(latest.getStatus())) {
                     latest.setActive(Boolean.TRUE);
                     latest.setStatus(STATUS_ACTIVE);
-                    repo.save(latest);
+                    // System write: refresh of existing record during sync — bypass since
+                    // initSync runs as a system job (scheduled poll / admin trigger).
+                    unconstrainedDataManager.save(latest);
                 }
                 skipped++;
                 continue;
@@ -173,8 +225,7 @@ public class MetaSyncService {
                     : Boolean.TRUE.equals(latest.getDeleted()) ? "WARNING"
                     : computeChangedStatus(latest.getFieldData(), fields);
 
-            // deactivateAll xử lý cả null records (khác deactivateActive chỉ match active=true)
-            repo.deactivateAll(metaSourceId, table.name());
+            deactivateAll(metaSourceId, table.name());
 
             MetaSync e = new MetaSync();
             e.setCode(syncCode);
@@ -190,17 +241,17 @@ public class MetaSyncService {
             e.setChangedStatus(changedStatus);
             e.setChangedSummary(buildChangedSummary(changedStatus, source.getName(), table.name(), fields.size()));
 
-            changedItems.add(MetaSyncMapper.toDto(repo.save(e)));
+            changedItems.add(MetaSyncMapper.toDto(unconstrainedDataManager.save(e)));
         }
 
-        // Detect bảng bị xóa: dùng findLatestPerMetaCode để lấy version mới nhất mỗi bảng
-        for (MetaSync latest : repo.findLatestPerMetaCode(metaSourceId)) {
+        // Detect bảng bị xóa
+        for (MetaSync latest : findLatestPerMetaCode(metaSourceId)) {
             String metaCode = latest.getMetaCode();
             if (metaCode == null || currentTables.containsKey(metaCode) || Boolean.TRUE.equals(latest.getDeleted())) {
                 continue;
             }
 
-            repo.deactivateAll(metaSourceId, metaCode);
+            deactivateAll(metaSourceId, metaCode);
 
             MetaSync deleted = new MetaSync();
             int versionNo = nextVersionNo(latest.getVersionNo());
@@ -216,19 +267,22 @@ public class MetaSyncService {
             deleted.setVersionNo(versionNo);
             deleted.setChangedStatus("CRITICAL");
             deleted.setChangedSummary("Removed " + metaCode + " from " + source.getName());
-            changedItems.add(MetaSyncMapper.toDto(repo.save(deleted)));
+            changedItems.add(MetaSyncMapper.toDto(unconstrainedDataManager.save(deleted)));
         }
 
         return new SyncResultDto(changedItems.size(), skipped, changedItems, SYNC_MODE_ONLINE, null);
     }
 
     private SyncResultDto useOfflineMetaSync(UUID metaSourceId, RuntimeException cause) {
-        List<MetaSync> latestItems = repo.findByMetaSourceIdAndActiveTrueOrderByMetaCodeAsc(metaSourceId);
+        List<MetaSync> latestItems = unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "select s from MetaSync s where s.metaSource.id = :id and s.active = true order by s.metaCode asc",
+                Map.of("id", metaSourceId), null);
         List<MetaSyncDto> items = latestItems.stream()
                 .map(item -> {
                     if (!STATUS_OFFLINE.equals(item.getStatus())) {
                         item.setStatus(STATUS_OFFLINE);
-                        repo.save(item);
+                        unconstrainedDataManager.save(item);
                     }
                     return MetaSyncMapper.toDto(item);
                 })
@@ -308,11 +362,32 @@ public class MetaSyncService {
             return;
         }
         if (currentId == null) {
-            repo.deactivateAll(e.getMetaSource().getId(), e.getMetaCode());
+            deactivateAll(e.getMetaSource().getId(), e.getMetaCode());
         } else {
-            repo.deactivateAllExcept(e.getMetaSource().getId(), e.getMetaCode(), currentId);
+            deactivateAllExcept(e.getMetaSource().getId(), e.getMetaCode(), currentId);
         }
         e.setActive(Boolean.TRUE);
+    }
+
+    private void deactivateAll(UUID metaSourceId, String metaCode) {
+        entityManager.createQuery(
+                "UPDATE MetaSync ms SET ms.active = false " +
+                "WHERE ms.metaSource.id = :metaSourceId AND ms.metaCode = :metaCode")
+            .setParameter("metaSourceId", metaSourceId)
+            .setParameter("metaCode", metaCode)
+            .executeUpdate();
+        entityManager.clear();
+    }
+
+    private void deactivateAllExcept(UUID metaSourceId, String metaCode, UUID id) {
+        entityManager.createQuery(
+                "UPDATE MetaSync ms SET ms.active = false " +
+                "WHERE ms.metaSource.id = :metaSourceId AND ms.metaCode = :metaCode AND ms.id <> :id")
+            .setParameter("metaSourceId", metaSourceId)
+            .setParameter("metaCode", metaCode)
+            .setParameter("id", id)
+            .executeUpdate();
+        entityManager.clear();
     }
 
     private String buildChangedSummary(String changedStatus, String sourceName, String tableName, int fieldCount) {
@@ -336,17 +411,14 @@ public class MetaSyncService {
                     .filter(field -> !isTableMarker(field))
                     .map(FieldItem::name)
                     .collect(Collectors.toSet());
-            // Field bị xóa → CRITICAL
             for (String oldName : oldTypeByName.keySet()) {
                 if (!newNames.contains(oldName)) return "CRITICAL";
             }
-            // Type thay đổi → CRITICAL
             for (FieldItem f : newFields) {
                 if (isTableMarker(f)) continue;
                 String oldType = oldTypeByName.get(f.name());
                 if (oldType != null && !oldType.equals(f.dataType())) return "CRITICAL";
             }
-            // Chỉ thêm field → WARNING
             return "WARNING";
         } catch (Exception e) {
             return "CRITICAL";
@@ -357,15 +429,46 @@ public class MetaSyncService {
         if (source == null || source.getId() == null) {
             throw new IllegalStateException("MetaSource is required for MetaSync");
         }
-        return repo.findFirstNumericCodeByMetaSourceId(source.getId())
+        return findFirstNumericCodeByMetaSourceId(source.getId())
                 .orElseGet(this::generateNextNumericCode);
+    }
+
+    private Optional<String> findFirstNumericCodeByMetaSourceId(UUID metaSourceId) {
+        @SuppressWarnings("unchecked")
+        List<String> r = entityManager.createNativeQuery(
+                """
+                SELECT ms.code
+                FROM core_meta_sync ms
+                WHERE ms.data_source_id = :metaSourceId
+                  AND ms.code ~ '^[0-9]+$'
+                ORDER BY ms.created_date ASC NULLS LAST, ms.code ASC
+                LIMIT 1
+                """)
+            .setParameter("metaSourceId", metaSourceId)
+            .getResultList();
+        return r.isEmpty() ? Optional.empty() : Optional.ofNullable(r.get(0));
+    }
+
+    private Optional<MetaSync> findLatestByMetaSourceAndMetaCode(UUID metaSourceId, String metaCode) {
+        List<MetaSync> r = unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "select s from MetaSync s where s.metaSource.id = :id and s.metaCode = :code order by s.versionNo desc",
+                Map.of("id", metaSourceId, "code", metaCode), null);
+        return r.isEmpty() ? Optional.empty() : Optional.of(r.get(0));
+    }
+
+    private List<MetaSync> findLatestPerMetaCode(UUID metaSourceId) {
+        return unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "SELECT ms FROM MetaSync ms WHERE ms.metaSource.id = :metaSourceId " +
+                "AND ms.versionNo = (SELECT MAX(ms2.versionNo) FROM MetaSync ms2 " +
+                "                    WHERE ms2.metaSource.id = :metaSourceId AND ms2.metaCode = ms.metaCode)",
+                Map.of("metaSourceId", metaSourceId), null);
     }
 
     private boolean isTableMarker(FieldItem field) {
         return field != null && TABLE_MARKER_DATA_TYPE.equals(field.dataType());
     }
-
-
 
     private int safeVersionNo(Integer versionNo) {
         return versionNo == null ? 1 : versionNo;
@@ -375,23 +478,37 @@ public class MetaSyncService {
         return safeVersionNo(versionNo) + 1;
     }
 
+    private boolean existsByCode(String code) {
+        return !unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "select s from MetaSync s where s.code = :code",
+                Map.of("code", code), null).isEmpty();
+    }
+
+    private int findMaxNumericCode() {
+        Object r = entityManager.createNativeQuery(
+                "SELECT COALESCE(MAX(CAST(code AS INTEGER)), 0) FROM core_meta_sync WHERE code ~ '^[0-9]+$'"
+            ).getSingleResult();
+        return r == null ? 0 : ((Number) r).intValue();
+    }
+
     private String generateNextNumericCode() {
-        int next = repo.findMaxNumericCode() + 1;
+        int next = findMaxNumericCode() + 1;
         String candidate;
         do {
             candidate = String.format("%05d", next);
             next++;
-        } while (repo.existsByCode(candidate));
+        } while (existsByCode(candidate));
         return candidate;
     }
 
     private MetaSync loadOrThrow(UUID id) {
-        return repo.findById(id)
+        return secureDataManager.loadOne(ENTITY_CLASS, id)
                 .orElseThrow(() -> new NotFoundException("MetaSync not found: " + id));
     }
 
     private MetaSource loadSource(UUID id) {
-        return sourceRepo.findById(id)
+        return secureDataManager.loadOne(MetaSource.class, id)
                 .orElseThrow(() -> new NotFoundException("MetaSource not found: " + id));
     }
 }

@@ -2,6 +2,7 @@ package com.react.spring.meta.metasync.entity;
 
 import com.react.spring.common.entity.BaseEntity;
 import com.react.spring.meta.metasource.entity.MetaSource;
+import com.vn.security.core.security.catalog.SecuredEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -17,6 +18,7 @@ import org.hibernate.type.SqlTypes;
 
 import java.util.UUID;
 
+@SecuredEntity(jpqlAllowed = true)
 @Entity
 @Table(name = "core_meta_sync", uniqueConstraints = {
         @UniqueConstraint(name = "uq_core_meta_sync_source_meta_code_version", columnNames = {"data_source_id", "meta_code", "version_no"})

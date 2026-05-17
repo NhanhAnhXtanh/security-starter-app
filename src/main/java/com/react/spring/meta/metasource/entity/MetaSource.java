@@ -5,6 +5,7 @@ import com.react.spring.catalog.entity.Domain;
 import com.react.spring.catalog.entity.Organization;
 import com.react.spring.common.enums.ConnectorType;
 import com.react.spring.common.enums.SourceType;
+import com.vn.security.core.security.catalog.SecuredEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -22,6 +23,7 @@ import org.hibernate.type.SqlTypes;
 
 import java.util.UUID;
 
+@SecuredEntity(jpqlAllowed = true)
 @Entity
 @Table(name = "core_meta_source", uniqueConstraints = {
         @UniqueConstraint(name = "uq_core_meta_source_code", columnNames = "code"),

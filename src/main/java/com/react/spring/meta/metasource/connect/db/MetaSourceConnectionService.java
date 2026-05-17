@@ -6,7 +6,7 @@ import com.react.spring.meta.metasource.connect.db.dto.SchemaDto;
 import com.react.spring.meta.metasource.entity.MetaSource;
 import com.react.spring.common.enums.ConnectorType;
 import com.react.spring.common.exception.NotFoundException;
-import com.react.spring.meta.metasource.repository.MetaSourceRepository;
+import com.vn.security.core.security.data.SecureDataManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
@@ -36,11 +36,11 @@ public class MetaSourceConnectionService {
     private static final int QUERY_TIMEOUT_SEC = 30;
     private static final int MAX_ROWS = 1000;
 
-    private final MetaSourceRepository repo;
+    private final SecureDataManager secureDataManager;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public MetaSourceConnectionService(MetaSourceRepository repo) {
-        this.repo = repo;
+    public MetaSourceConnectionService(SecureDataManager secureDataManager) {
+        this.secureDataManager = secureDataManager;
     }
 
     public SchemaDto fetchSchema(UUID metaSourceId) {
@@ -80,7 +80,7 @@ public class MetaSourceConnectionService {
     }
 
     private PgConfig loadPostgresConfig(UUID id) {
-        MetaSource ms = repo.findById(id)
+        MetaSource ms = secureDataManager.loadOne(MetaSource.class, id)
                 .orElseThrow(() -> new NotFoundException("MetaSource not found: " + id));
         if (ms.getConnectorType() != ConnectorType.POSTGRES) {
             throw new ResponseStatusException(BAD_REQUEST,
@@ -109,7 +109,6 @@ public class MetaSourceConnectionService {
     }
 
     private SchemaDto readPostgresSchema(Connection conn, String schema) throws SQLException {
-        // 1. All tables in schema (including tables with no columns)
         Map<String, List<SchemaDto.FieldDto>> tableFields = new LinkedHashMap<>();
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT table_name FROM information_schema.tables " +
@@ -123,7 +122,6 @@ public class MetaSourceConnectionService {
             }
         }
 
-        // 2. Columns grouped by table
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT table_name, column_name, data_type, is_nullable " +
                         "FROM information_schema.columns " +
@@ -147,7 +145,6 @@ public class MetaSourceConnectionService {
             }
         }
 
-        // 3. Primary keys
         Map<String, java.util.Set<String>> pks = new HashMap<>();
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT tc.table_name, kcu.column_name " +
@@ -165,7 +162,6 @@ public class MetaSourceConnectionService {
             }
         }
 
-        // 4. Foreign keys
         Map<String, Map<String, SchemaDto.Fk>> fks = new HashMap<>();
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT tc.table_name, kcu.column_name, " +

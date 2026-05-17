@@ -4,9 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.react.spring.meta.metasource.connect.rest.dto.ApiAuthConfigDTO;
 import com.react.spring.meta.metasource.connect.rest.dto.ApiBodyConfigDTO;
 import com.react.spring.meta.metasource.connect.rest.dto.ApiConfigDTO;
-import com.react.spring.meta.metasource.connect.rest.dto.ApiFormDataFieldDTO;
 import com.react.spring.meta.metasource.connect.rest.dto.ApiQueryParamDTO;
-import com.react.spring.meta.metasource.connect.rest.dto.ApiUrlEncodedFieldDTO;
 import com.react.spring.meta.metasource.connect.rest.dto.RestProxyHeaderDto;
 import com.react.spring.meta.metasource.connect.rest.dto.RestProxyRequest;
 import com.react.spring.meta.metasource.connect.rest.dto.RestProxyResultDto;
@@ -16,7 +14,7 @@ import com.react.spring.common.enums.ApiBodyType;
 import com.react.spring.common.enums.ApiKeyPlacement;
 import com.react.spring.common.enums.ConnectorType;
 import com.react.spring.common.exception.NotFoundException;
-import com.react.spring.meta.metasource.repository.MetaSourceRepository;
+import com.vn.security.core.security.data.SecureDataManager;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -40,18 +38,18 @@ public class MetaSourceRestService {
 
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
 
-    private final MetaSourceRepository repo;
+    private final SecureDataManager secureDataManager;
     private final ObjectMapper mapper = new ObjectMapper();
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(TIMEOUT)
             .build();
 
-    public MetaSourceRestService(MetaSourceRepository repo) {
-        this.repo = repo;
+    public MetaSourceRestService(SecureDataManager secureDataManager) {
+        this.secureDataManager = secureDataManager;
     }
 
     public RestProxyResultDto proxy(UUID metaSourceId, RestProxyRequest req) {
-        MetaSource ms = repo.findById(metaSourceId)
+        MetaSource ms = secureDataManager.loadOne(MetaSource.class, metaSourceId)
                 .orElseThrow(() -> new NotFoundException("MetaSource not found: " + metaSourceId));
 
         if (ms.getConnectorType() != ConnectorType.REST) {
@@ -85,14 +83,11 @@ public class MetaSourceRestService {
                 .timeout(TIMEOUT)
                 .method(method, bodyPublisher);
 
-        // Auth: connector-level token is overridden by per-request auth config
         applyAuth(builder, cfg.getAuth(), sourceAuthToken);
 
-        // Default headers
         builder.header("Accept", "application/json");
         applyContentType(builder, cfg.getBody());
 
-        // Custom headers (canEdit=false headers are included as-is)
         if (cfg.getHeaders() != null) {
             cfg.getHeaders().stream()
                     .filter(h -> h != null && h.getKey() != null && !h.getKey().isBlank())
@@ -180,7 +175,6 @@ public class MetaSourceRestService {
                 default -> {}
             }
         }
-        // Fall back to connector-level bearer token
         if (sourceToken != null && !sourceToken.isBlank()) {
             builder.header("Authorization", "Bearer " + sourceToken);
         }
