@@ -1,0 +1,71 @@
+spring:
+  application:
+    name: db-react-springboot-be
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/db_react_springboot
+    username: postgres
+    password: 123456
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+    properties:
+      hibernate.dialect: org.hibernate.dialect.PostgreSQLDialect
+      hibernate.jdbc.time_zone: Asia/Ho_Chi_Minh
+
+  # Starter ships Liquibase but we let Hibernate ddl-auto handle schema in dev.
+  liquibase:
+    enabled: false
+
+  # Starter ships spring-boot-starter-mail; suppress mail health until configured.
+  mail:
+    host: localhost
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          authority-prefix: ''
+          authorities-claim-name: auth
+
+server:
+  port: 8081
+
+management:
+  health:
+    mail:
+      enabled: false
+
+# Security Core starter configuration
+security-core:
+  security:
+    jwt:
+      # DEV ONLY — rotate before production.
+      base64-secret: 1W/dgYDz2SfLLj2WgUkOrQclguYVhYPsLZE0rJ2za+UrYXPG0yPXN3lLk6HVXLyp43tMTEZ/dqkr+Oe4/skxjQ==
+      token-validity-in-seconds: 86400
+      token-validity-in-seconds-for-remember-me: 2592000
+  cors:
+    allowed-origins: 'http://localhost:3000,http://localhost:5173,http://localhost:4200'
+    allowed-methods: '*'
+    allowed-headers: '*'
+    allow-credentials: true
+    max-age: 1800
+  fetch-plans:
+    config: classpath:fetch-plans.yml
+  cache:
+    enabled: false
+  # DEV ONLY — seeds admin/admin user on boot. DISABLE in production.
+  seed:
+    enabled: true
+    username: admin
+    password: admin
+    email: admin@localhost
+
+# MetaSync auto-polling (existing project feature)
+metasync:
+  polling:
+    enabled: true
+    cron: '*/30 * * * * *'
