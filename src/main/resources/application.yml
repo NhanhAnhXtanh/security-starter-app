@@ -12,9 +12,16 @@ spring:
     hibernate:
       ddl-auto: update
     open-in-view: false
+    # Defer data.sql until AFTER Hibernate creates schema (sec_permission table
+    # comes from the starter; data.sql seeds it post-creation).
+    defer-datasource-initialization: true
     properties:
       hibernate.dialect: org.hibernate.dialect.PostgreSQLDialect
       hibernate.jdbc.time_zone: Asia/Ho_Chi_Minh
+
+  sql:
+    init:
+      mode: always
 
   # Starter ships Liquibase but we let Hibernate ddl-auto handle schema in dev.
   liquibase:
