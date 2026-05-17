@@ -2,6 +2,11 @@ spring:
   application:
     name: db-react-springboot-be
 
+  main:
+    # Lets AsyncOverrideConfig#taskExecutor override starter's broken
+    # AsyncConfiguration bean (incompatible with Spring Boot 4 reflection).
+    allow-bean-definition-overriding: true
+
   datasource:
     url: jdbc:postgresql://localhost:5432/db_react_springboot
     username: postgres
@@ -63,7 +68,9 @@ security-core:
   fetch-plans:
     config: classpath:fetch-plans.yml
   cache:
-    enabled: false
+    # Must stay enabled — starter's UserService injects CacheManager.
+    # Setting to false skips CacheConfiguration entirely and breaks UserService wiring.
+    enabled: true
   # DEV ONLY — seeds admin/admin user on boot. DISABLE in production.
   seed:
     enabled: true

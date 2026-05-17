@@ -19,8 +19,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
 
+// Starter ships its own OrganizationResource on /api/organizations.
+// Consumer endpoint moved to /api/app/organizations to avoid mapping collision.
 @RestController
-@RequestMapping("/api/organizations")
+@RequestMapping("/api/app/organizations")
 public class OrganizationController {
 
     private final OrganizationService service;
