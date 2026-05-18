@@ -9,15 +9,15 @@ import com.react.spring.common.exception.NotFoundException;
 import com.react.spring.meta.metasource.mapper.MetaSourceMapper;
 import com.vn.security.core.security.data.SecureDataManager;
 import com.vn.security.core.security.data.SecureDataManager.EntityMutation;
-import com.vn.security.core.security.data.UnconstrainedDataManager;
+import com.vn.security.core.security.data.SecuredLoadQuery;
 import jakarta.persistence.EntityManager;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -26,22 +26,18 @@ import java.util.UUID;
 public class MetaSourceService {
 
     private static final Class<MetaSource> ENTITY_CLASS = MetaSource.class;
+    private static final String ENTITY_CODE = "metasource";
     private static final List<String> WRITABLE_ATTRS = List.of(
         "code", "name", "sourceType", "connectorType", "description",
         "enabled", "organization", "domain", "connectorConfig"
     );
 
     private final SecureDataManager secureDataManager;
-    // Bypass: by-field lookups (code, name) not in SecureDataManager.
-    private final UnconstrainedDataManager unconstrainedDataManager;
-    // EntityManager: PostgreSQL native regex+CAST for findMaxNumericCode.
+    // EntityManager: PostgreSQL native regex+CAST for findMaxNumericCode — no JPQL form.
     private final EntityManager entityManager;
 
-    public MetaSourceService(SecureDataManager secureDataManager,
-                             UnconstrainedDataManager unconstrainedDataManager,
-                             EntityManager entityManager) {
+    public MetaSourceService(SecureDataManager secureDataManager, EntityManager entityManager) {
         this.secureDataManager = secureDataManager;
-        this.unconstrainedDataManager = unconstrainedDataManager;
         this.entityManager = entityManager;
     }
 
@@ -104,18 +100,24 @@ public class MetaSourceService {
     }
 
     private Optional<MetaSource> findByCode(String code) {
-        List<MetaSource> r = unconstrainedDataManager.loadListByJpql(
-                ENTITY_CLASS,
-                "select m from MetaSource m where m.code = :code",
-                Map.of("code", code), null);
+        SecuredLoadQuery q = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql("select m from MetaSource m where m.code = :code")
+            .parameter("code", code)
+            .pageable(PageRequest.of(0, 1))
+            .build();
+        List<MetaSource> r = secureDataManager.loadByQuery(ENTITY_CLASS, q).getContent();
         return r.isEmpty() ? Optional.empty() : Optional.of(r.get(0));
     }
 
     private boolean existsByName(String name) {
-        return !unconstrainedDataManager.loadListByJpql(
-                ENTITY_CLASS,
-                "select m from MetaSource m where m.name = :name",
-                Map.of("name", name), null).isEmpty();
+        SecuredLoadQuery q = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql("select m from MetaSource m where m.name = :name")
+            .parameter("name", name)
+            .pageable(PageRequest.of(0, 1))
+            .build();
+        return !secureDataManager.loadByQuery(ENTITY_CLASS, q).getContent().isEmpty();
     }
 
     private boolean existsByCode(String code) {

@@ -8,9 +8,10 @@ import com.react.spring.meta.metapack.entity.MetaPack;
 import com.react.spring.meta.metapack.entity.MetaPackVersion;
 import com.vn.security.core.security.data.SecureDataManager;
 import com.vn.security.core.security.data.SecureDataManager.EntityMutation;
-import com.vn.security.core.security.data.UnconstrainedDataManager;
+import com.vn.security.core.security.data.SecuredLoadQuery;
 import jakarta.persistence.EntityManager;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,42 +32,36 @@ import java.util.stream.Collectors;
 public class MetaPackService {
 
     private static final Class<MetaPack> ENTITY_CLASS = MetaPack.class;
+    private static final String ENTITY_CODE = "metapack";
+    private static final String VERSION_CODE = "metapackversion";
     private static final List<String> WRITABLE_ATTRS = List.of(
         "code", "name", "description", "status",
         "maxRequestsPerMinute", "maxRequestsPerDay", "currentVersion"
+    );
+    private static final List<String> VERSION_WRITABLE = List.of(
+        "metaPack", "versionNumber", "status", "releaseNotes", "dataConfig", "dataHash"
     );
 
     private final ObjectMapper objectMapper = new ObjectMapper()
         .configure(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     private final SecureDataManager secureDataManager;
-    // Bypass: starter SecureDataManager only supports lookup by id; non-id lookups
-    // (findByCode, exists, findMaxNumericCode native query, findByMetaPackId order-by)
-    // go through Unconstrained per rules/data-access.md §2.3 — service still gates by id
-    // via secureDataManager for the actual CRUD path.
-    private final UnconstrainedDataManager unconstrainedDataManager;
-    // EntityManager: native PostgreSQL query (regex + CAST) — no JPQL equivalent.
+    // EntityManager: PostgreSQL native regex+CAST — no JPQL form. Read-only system
+    // sequence generator, no user input. Single carve-out, like MetaSetService.
     private final EntityManager entityManager;
 
     @Autowired
     private MetaPackMapper metaPackMapper;
 
-    public MetaPackService(
-        SecureDataManager secureDataManager,
-        UnconstrainedDataManager unconstrainedDataManager,
-        EntityManager entityManager
-    ) {
+    public MetaPackService(SecureDataManager secureDataManager, EntityManager entityManager) {
         this.secureDataManager = secureDataManager;
-        this.unconstrainedDataManager = unconstrainedDataManager;
         this.entityManager = entityManager;
     }
 
     @Transactional(readOnly = true)
     public List<MetaPackDto> findAll() {
-        // Starter SecureDataManager.loadList rejects Pageable.unpaged() — use a
-        // capped PageRequest. Callers wanting paginated access should call the
-        // controller's paginated endpoint instead (TODO: expose Pageable param).
-        return secureDataManager.loadList(ENTITY_CLASS, org.springframework.data.domain.PageRequest.of(0, 1000))
+        // Cap at 1000 — see BUGS-starter.md [#S006] (Pageable.unpaged() crashes).
+        return secureDataManager.loadList(ENTITY_CLASS, PageRequest.of(0, 1000))
                 .stream()
                 .map(metaPackMapper::toDto)
                 .collect(Collectors.toList());
@@ -89,14 +84,14 @@ public class MetaPackService {
 
     @Transactional(readOnly = true)
     public List<MetaPackVersionDto> listVersions(UUID metaPackId) {
-        // Bypass: order-by lookup not in SecureDataManager API.
-        List<MetaPackVersion> versions = unconstrainedDataManager.loadListByJpql(
-            MetaPackVersion.class,
-            "select v from MetaPackVersion v where v.metaPack.id = :id order by v.versionNumber desc",
-            Map.of("id", metaPackId),
-            null
-        );
-        return versions.stream().map(this::toVersionDto).collect(Collectors.toList());
+        SecuredLoadQuery query = SecuredLoadQuery.builder()
+            .entityCode(VERSION_CODE)
+            .jpql("select v from MetaPackVersion v where v.metaPack.id = :id order by v.versionNumber desc")
+            .parameter("id", metaPackId)
+            .pageable(PageRequest.of(0, 10_000))
+            .build();
+        return secureDataManager.loadByQuery(MetaPackVersion.class, query)
+            .getContent().stream().map(this::toVersionDto).collect(Collectors.toList());
     }
 
     @Transactional
@@ -128,8 +123,7 @@ public class MetaPackService {
         String configJson = serializeVersionItems(dto.getVersionItems());
         version.setDataConfig(configJson);
         version.setDataHash(hashJson(configJson));
-        // System-internal write: linked aggregate of a user-initiated MetaPack create.
-        version = unconstrainedDataManager.save(version);
+        version = secureDataManager.save(MetaPackVersion.class, null, new EntityMutation<>(version, VERSION_WRITABLE));
 
         saved.setCurrentVersion(version);
         saved = secureDataManager.save(ENTITY_CLASS, saved.getId(), new EntityMutation<>(saved, WRITABLE_ATTRS));
@@ -187,10 +181,7 @@ public class MetaPackService {
                 newVersion.setStatus("DRAFT");
                 newVersion.setDataConfig(newConfigJson);
                 newVersion.setDataHash(newDataHash);
-                // Bypass: save linked version directly — cascaded write via parent SecureDataManager.save
-                // would not get a fresh id assigned before parent flushes. Comment: system-internal write
-                // wrapped inside a user-initiated update transaction (still authorized via parent loadOne).
-                newVersion = unconstrainedDataManager.save(newVersion);
+                newVersion = secureDataManager.save(MetaPackVersion.class, null, new EntityMutation<>(newVersion, VERSION_WRITABLE));
                 entity.setCurrentVersion(newVersion);
 
                 if ("PUBLISHED".equals(oldStatus)) {
@@ -221,13 +212,13 @@ public class MetaPackService {
     // ---- Internal helpers (system-context, not user-routed) ----
 
     private Optional<MetaPack> findByCode(String code) {
-        // Bypass: code lookup not supported by SecureDataManager API.
-        List<MetaPack> result = unconstrainedDataManager.loadListByJpql(
-            ENTITY_CLASS,
-            "select m from MetaPack m where m.code = :code",
-            Map.of("code", code),
-            null
-        );
+        SecuredLoadQuery query = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql("select m from MetaPack m where m.code = :code")
+            .parameter("code", code)
+            .pageable(PageRequest.of(0, 1))
+            .build();
+        List<MetaPack> result = secureDataManager.loadByQuery(ENTITY_CLASS, query).getContent();
         return result.isEmpty() ? Optional.empty() : Optional.of(result.get(0));
     }
 
