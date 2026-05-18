@@ -1,0 +1,347 @@
+# Fetch plans for consumer entities.
+#
+# Per starter convention, each @SecuredEntity auto-claims two plan codes:
+#   {code}-list   — short projection for paginated lists
+#   {code}-detail — full projection for single-entity views (extends -list)
+#
+# Code default = lowercase Java simple class name UNLESS @SecuredEntity(code=...)
+# overrides. Consumer's Organization uses code="app-organization" because it
+# coexists with starter's demo Organization entity.
+#
+# WARNING — file overrides starter's default fetch-plans.yml.
+# Spring resource lookup picks consumer's classpath file first, shadowing the
+# starter's bundled defaults. If you remove an entity here, the starter entities
+# also lose their fetch plans. Therefore include starter demo entities at the
+# bottom of this file (proof-organization, proof-department, proof-employee)
+# to preserve their behaviour.
+
+fetch-plans:
+  # =========================================================================
+  # CATALOG
+  # =========================================================================
+  - entity: com.react.spring.catalog.entity.Organization
+    name: app-organization-list
+    properties:
+      - id
+      - name
+      - description
+
+  - entity: com.react.spring.catalog.entity.Organization
+    name: app-organization-detail
+    extends: app-organization-list
+    properties:
+      - createdBy
+      - createdDate
+      - lastModifiedBy
+      - lastModifiedDate
+
+  - entity: com.react.spring.catalog.entity.Domain
+    name: domain-list
+    properties:
+      - id
+      - name
+      - description
+
+  - entity: com.react.spring.catalog.entity.Domain
+    name: domain-detail
+    extends: domain-list
+    properties:
+      - createdBy
+      - createdDate
+      - lastModifiedBy
+      - lastModifiedDate
+
+  - entity: com.react.spring.catalog.entity.Tag
+    name: tag-list
+    properties:
+      - id
+      - name
+      - description
+
+  - entity: com.react.spring.catalog.entity.Tag
+    name: tag-detail
+    extends: tag-list
+    properties:
+      - createdBy
+      - createdDate
+      - lastModifiedBy
+      - lastModifiedDate
+
+  # =========================================================================
+  # META — SOURCE
+  # =========================================================================
+  - entity: com.react.spring.meta.metasource.entity.MetaSource
+    name: metasource-list
+    properties:
+      - id
+      - code
+      - name
+      - sourceType
+      - connectorType
+      - enabled
+
+  - entity: com.react.spring.meta.metasource.entity.MetaSource
+    name: metasource-detail
+    extends: metasource-list
+    properties:
+      - description
+      - connectorConfig
+      - name: organization
+        properties: [id, name]
+      - name: domain
+        properties: [id, name]
+      - createdBy
+      - createdDate
+      - lastModifiedBy
+      - lastModifiedDate
+
+  # =========================================================================
+  # META — SYNC
+  # =========================================================================
+  - entity: com.react.spring.meta.metasync.entity.MetaSync
+    name: metasync-list
+    properties:
+      - id
+      - code
+      - status
+      - metaCode
+      - metaName
+      - versionNo
+      - active
+      - deleted
+      - changedStatus
+
+  - entity: com.react.spring.meta.metasync.entity.MetaSync
+    name: metasync-detail
+    extends: metasync-list
+    properties:
+      - fieldData
+      - fieldHash
+      - changedSummary
+      - name: metaSource
+        properties: [id, code, name]
+      - createdBy
+      - createdDate
+
+  # =========================================================================
+  # META — SET
+  # =========================================================================
+  - entity: com.react.spring.meta.metaset.entity.MetaSet
+    name: metaset-list
+    properties:
+      - id
+      - code
+      - metaCode
+      - name
+      - status
+      - classification
+      - tier
+
+  - entity: com.react.spring.meta.metaset.entity.MetaSet
+    name: metaset-detail
+    extends: metaset-list
+    properties:
+      - description
+      - publishedAt
+      - publishedBy
+      - publishedComment
+      - discontinuedAt
+      - discontinuedBy
+      - discontinuedComment
+      - lastSyncedAt
+      - lastSyncStatus
+      - lastSyncedVersion
+      - name: metaSource
+        properties: [id, code, name]
+      - name: organization
+        properties: [id, name]
+      - name: domain
+        properties: [id, name]
+      - name: tags
+        properties: [id, name]
+      - name: currentVersion
+        properties: [id, versionNo, metasyncCode, changedStatus, changedSummary]
+      - createdBy
+      - createdDate
+      - lastModifiedBy
+      - lastModifiedDate
+
+  # =========================================================================
+  # META — SET VERSION
+  # =========================================================================
+  - entity: com.react.spring.meta.metasetversion.entity.MetaSetVersion
+    name: metasetversion-list
+    properties:
+      - id
+      - metaCode
+      - versionNo
+      - dataSourceCode
+      - metasyncCode
+      - deleted
+      - changedStatus
+
+  - entity: com.react.spring.meta.metasetversion.entity.MetaSetVersion
+    name: metasetversion-detail
+    extends: metasetversion-list
+    properties:
+      - fieldData
+      - fieldHash
+      - exampleData
+      - endpointPath
+      - endpointConfig
+      - changedSummary
+      - name: apiSetting
+        properties: [id, config]
+      - name: operations
+        properties: [id, code, name, operationType, config, sortOrder]
+      - createdBy
+      - createdDate
+      - lastModifiedBy
+      - lastModifiedDate
+
+  # =========================================================================
+  # META — PACK
+  # =========================================================================
+  - entity: com.react.spring.meta.metapack.entity.MetaPack
+    name: metapack-list
+    properties:
+      - id
+      - code
+      - name
+      - status
+      - maxRequestsPerMinute
+      - maxRequestsPerDay
+
+  - entity: com.react.spring.meta.metapack.entity.MetaPack
+    name: metapack-detail
+    extends: metapack-list
+    properties:
+      - description
+      - name: currentVersion
+        properties: [id, versionNumber, status, dataHash]
+      - createdBy
+      - createdDate
+      - lastModifiedBy
+      - lastModifiedDate
+
+  - entity: com.react.spring.meta.metapack.entity.MetaPackVersion
+    name: metapackversion-list
+    properties:
+      - id
+      - versionNumber
+      - status
+      - dataHash
+
+  - entity: com.react.spring.meta.metapack.entity.MetaPackVersion
+    name: metapackversion-detail
+    extends: metapackversion-list
+    properties:
+      - releaseNotes
+      - dataConfig
+      - createdBy
+      - createdDate
+      - lastModifiedBy
+      - lastModifiedDate
+
+  - entity: com.react.spring.meta.metapack.entity.MetaPackRegistration
+    name: metapackregistration-list
+    properties:
+      - id
+      - subscriberName
+      - status
+      - apiKey
+      - expiresAt
+
+  - entity: com.react.spring.meta.metapack.entity.MetaPackRegistration
+    name: metapackregistration-detail
+    extends: metapackregistration-list
+    properties:
+      - requestedFields
+      - apiSettings
+      - customRateLimitPerMinute
+      - customRateLimitPerDay
+      - name: metaPack
+        properties: [id, code, name, status]
+      - createdBy
+      - createdAt
+      - updatedBy
+      - updatedAt
+
+  # =========================================================================
+  # STARTER DEMO ENTITIES — preserve plans bundled in starter jar (v0.0.3).
+  # Required because consumer's fetch-plans.yml shadows the starter's default.
+  # When starter publishes the Proof* rename, change classes here to
+  # ProofOrganization / ProofDepartment / ProofEmployee and codes to
+  # proof-organization-* / proof-department-* / proof-employee-*.
+  # =========================================================================
+  - entity: com.vn.security.core.domain.Organization
+    name: organization-list
+    properties:
+      - id
+      - code
+      - name
+      - ownerLogin
+
+  - entity: com.vn.security.core.domain.Organization
+    name: organization-detail
+    extends: organization-list
+    properties:
+      - budget
+      - name: departments
+        properties:
+          - id
+          - code
+          - name
+          - costCenter
+          - name: employees
+            properties:
+              - id
+              - employeeNumber
+              - firstName
+              - lastName
+              - email
+              - salary
+
+  - entity: com.vn.security.core.domain.Department
+    name: department-list
+    properties:
+      - id
+      - code
+      - name
+      - name: organization
+        properties: [id, name]
+      - costCenter
+
+  - entity: com.vn.security.core.domain.Department
+    name: department-detail
+    extends: department-list
+    properties:
+      - name: organization
+        properties: [id, code, name, ownerLogin]
+      - name: employees
+        properties:
+          - id
+          - employeeNumber
+          - firstName
+          - lastName
+          - email
+          - salary
+
+  - entity: com.vn.security.core.domain.Employee
+    name: employee-list
+    properties:
+      - id
+      - employeeNumber
+      - firstName
+      - lastName
+      - name: department
+        properties: [id, name]
+      - email
+
+  - entity: com.vn.security.core.domain.Employee
+    name: employee-detail
+    extends: employee-list
+    properties:
+      - salary
+      - name: department
+        properties: [id, code, name]
