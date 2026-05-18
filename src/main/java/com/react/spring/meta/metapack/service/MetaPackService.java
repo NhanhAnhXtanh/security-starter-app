@@ -63,7 +63,10 @@ public class MetaPackService {
 
     @Transactional(readOnly = true)
     public List<MetaPackDto> findAll() {
-        return secureDataManager.loadList(ENTITY_CLASS, Pageable.unpaged())
+        // Starter SecureDataManager.loadList rejects Pageable.unpaged() — use a
+        // capped PageRequest. Callers wanting paginated access should call the
+        // controller's paginated endpoint instead (TODO: expose Pageable param).
+        return secureDataManager.loadList(ENTITY_CLASS, org.springframework.data.domain.PageRequest.of(0, 1000))
                 .stream()
                 .map(metaPackMapper::toDto)
                 .collect(Collectors.toList());
@@ -109,17 +112,28 @@ public class MetaPackService {
         entity.setMaxRequestsPerDay(dto.getMaxRequestsPerDay() != null ? dto.getMaxRequestsPerDay() : 10000);
         entity.setStatus("DRAFT");
 
-        // Initial version snapshot — cascaded via MetaPack.currentVersion (CascadeType.ALL).
+        // Two-phase save to satisfy MetaPackVersion.metaPack @ManyToOne FK:
+        // 1. Persist MetaPack alone so it has an id.
+        // 2. Persist MetaPackVersion referencing the now-managed MetaPack.
+        // 3. Re-save MetaPack to point currentVersion FK at the version.
+        // Cascading from MetaPack.currentVersion in one shot fails with
+        // TransientPropertyValueException because version.metaPack would be
+        // transient at cascade time.
+        MetaPack saved = secureDataManager.save(ENTITY_CLASS, null, new EntityMutation<>(entity, WRITABLE_ATTRS));
+
         MetaPackVersion version = new MetaPackVersion();
-        version.setMetaPack(entity);
+        version.setMetaPack(saved);
         version.setVersionNumber(nextBusinessVersionNumber(null));
         version.setStatus("DRAFT");
         String configJson = serializeVersionItems(dto.getVersionItems());
         version.setDataConfig(configJson);
         version.setDataHash(hashJson(configJson));
-        entity.setCurrentVersion(version);
+        // System-internal write: linked aggregate of a user-initiated MetaPack create.
+        version = unconstrainedDataManager.save(version);
 
-        MetaPack saved = secureDataManager.save(ENTITY_CLASS, null, new EntityMutation<>(entity, WRITABLE_ATTRS));
+        saved.setCurrentVersion(version);
+        saved = secureDataManager.save(ENTITY_CLASS, saved.getId(), new EntityMutation<>(saved, WRITABLE_ATTRS));
+
         return metaPackMapper.toDto(saved);
     }
 
