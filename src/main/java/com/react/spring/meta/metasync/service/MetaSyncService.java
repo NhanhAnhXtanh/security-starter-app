@@ -8,8 +8,6 @@ import com.react.spring.meta.metasync.dto.MetaSyncRequest;
 import com.react.spring.meta.metasource.connect.db.dto.SchemaDto;
 import com.react.spring.meta.metasource.connect.db.dto.SyncResultDto;
 import com.react.spring.meta.metasource.entity.MetaSource;
-import com.react.spring.meta.metaset.entity.MetaSet;
-import com.react.spring.meta.metasetversion.entity.MetaSetVersion;
 import com.react.spring.meta.metasync.entity.MetaSync;
 import com.react.spring.common.exception.NotFoundException;
 import com.react.spring.meta.metasync.mapper.MetaSyncMapper;
@@ -18,18 +16,17 @@ import com.react.spring.common.utils.FieldHashUtils;
 import com.react.spring.common.utils.SlugUtils;
 import com.vn.security.core.security.data.SecureDataManager;
 import com.vn.security.core.security.data.SecureDataManager.EntityMutation;
+import com.vn.security.core.security.data.SecuredLoadQuery;
 import com.vn.security.core.security.data.UnconstrainedDataManager;
 import jakarta.persistence.EntityManager;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +37,20 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+/**
+ * MetaSync application service. Follows MetaSet pattern: every user-routed read
+ * uses {@link SecureDataManager#loadByQuery} with JPQL (checkCrud(READ) before
+ * exec). Writes via {@code secureDataManager.save} with EntityMutation.
+ *
+ * Two intentional carve-outs documented per call site:
+ *   1. {@link UnconstrainedDataManager} for writes inside {@link #initSync}
+ *      and {@link #useOfflineMetaSync} — shared with the scheduled
+ *      {@link MetaSyncPollingService} which runs with no user context (§2.1).
+ *      Callers from REST must be admin-only; polling never touches user data.
+ *   2. {@link EntityManager} for native MAX(CAST regex), native LIMIT-1, and
+ *      JPQL @Modifying bulk UPDATE/DELETE — no equivalent in starter API.
+ *      All system-internal, read-only or system-triggered cascade.
+ */
 @Service
 @Transactional
 public class MetaSyncService {
@@ -51,6 +62,7 @@ public class MetaSyncService {
     private static final String SYNC_MODE_OFFLINE = "OFFLINE";
 
     private static final Class<MetaSync> ENTITY_CLASS = MetaSync.class;
+    private static final String ENTITY_CODE = "metasync";
     private static final List<String> WRITABLE_ATTRS = List.of(
         "code", "status", "metaSource", "metaCode", "metaName",
         "fieldData", "fieldHash", "deleted", "active",
@@ -58,13 +70,9 @@ public class MetaSyncService {
     );
 
     private final SecureDataManager secureDataManager;
-    // Bypass: starter has no Specification-based filter, no by-field lookups,
-    // no @Modifying UPDATE/DELETE. All uses below are read-only system queries
-    // OR writes that already passed an upstream SecureDataManager check
-    // (per rules/data-access.md §2.3).
+    // §2.1 system-context writes inside initSync/useOfflineMetaSync — shared with polling.
     private final UnconstrainedDataManager unconstrainedDataManager;
-    // EntityManager: PostgreSQL native (regex/CAST for code), JPQL @Modifying UPDATE
-    // for bulk deactivate (no equivalent in starter API).
+    // Native SQL + JPQL @Modifying — no starter API equivalent.
     private final EntityManager entityManager;
     private final MetaSourceConnectionService connectionService;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -81,34 +89,44 @@ public class MetaSyncService {
 
     @Transactional(readOnly = true)
     public Page<MetaSyncDto> list(UUID dataSourceId, UUID organizationId, UUID domainId, String keyword, Pageable pageable) {
-        String kw = (keyword == null || keyword.isBlank()) ? null : keyword.trim();
-        Specification<MetaSync> spec = (root, query, cb) -> cb.equal(root.get("active"), Boolean.TRUE);
+        StringBuilder jpql = new StringBuilder("select s from MetaSync s where s.active = true");
+        Map<String, Object> params = new LinkedHashMap<>();
         if (dataSourceId != null) {
-            spec = spec.and((root, query, cb) -> cb.equal(root.get("metaSource").get("id"), dataSourceId));
+            jpql.append(" and s.metaSource.id = :srcId");
+            params.put("srcId", dataSourceId);
         }
         if (organizationId != null) {
-            spec = spec.and((root, query, cb) -> cb.equal(root.get("metaSource").get("organization").get("id"), organizationId));
+            jpql.append(" and s.metaSource.organization.id = :orgId");
+            params.put("orgId", organizationId);
         }
         if (domainId != null) {
-            spec = spec.and((root, query, cb) -> cb.equal(root.get("metaSource").get("domain").get("id"), domainId));
+            jpql.append(" and s.metaSource.domain.id = :domId");
+            params.put("domId", domainId);
         }
+        String kw = (keyword == null || keyword.isBlank()) ? null : keyword.trim();
         if (kw != null) {
-            String like = "%" + kw.toLowerCase() + "%";
-            spec = spec.and((root, query, cb) -> cb.or(
-                    cb.like(cb.lower(root.get("metaName")), like),
-                    cb.like(cb.lower(root.get("code")), like)
-            ));
+            jpql.append(" and (lower(s.metaName) like :kw or lower(s.code) like :kw)");
+            params.put("kw", "%" + kw.toLowerCase() + "%");
         }
-        return unconstrainedDataManager.loadPage(ENTITY_CLASS, spec, pageable).map(MetaSyncMapper::toDto);
+        SecuredLoadQuery q = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql(jpql.toString())
+            .parameters(params)
+            .pageable(pageable)
+            .build();
+        return secureDataManager.loadByQuery(ENTITY_CLASS, q).map(MetaSyncMapper::toDto);
     }
 
     @Transactional(readOnly = true)
     public List<MetaSyncDto> listBySource(UUID metaSourceId) {
-        return unconstrainedDataManager.loadListByJpql(
-                ENTITY_CLASS,
-                "select s from MetaSync s where s.metaSource.id = :id and s.active = true order by s.metaCode asc",
-                Map.of("id", metaSourceId), null)
-                .stream().map(MetaSyncMapper::toDto).toList();
+        SecuredLoadQuery q = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql("select s from MetaSync s where s.metaSource.id = :id and s.active = true order by s.metaCode asc")
+            .parameter("id", metaSourceId)
+            .pageable(PageRequest.of(0, 10_000))
+            .build();
+        return secureDataManager.loadByQuery(ENTITY_CLASS, q).getContent()
+            .stream().map(MetaSyncMapper::toDto).toList();
     }
 
     @Transactional(readOnly = true)
@@ -118,13 +136,15 @@ public class MetaSyncService {
 
     @Transactional(readOnly = true)
     public MetaSyncDto getByCode(String code) {
-        List<MetaSync> r = unconstrainedDataManager.loadListByJpql(
-                ENTITY_CLASS,
-                "select s from MetaSync s where s.code = :code and s.active = true order by s.metaCode asc, s.versionNo desc",
-                Map.of("code", code), null);
-        MetaSync e = r.isEmpty() ? null : r.get(0);
-        if (e == null) throw new NotFoundException("MetaSync not found: " + code);
-        return MetaSyncMapper.toDto(e);
+        SecuredLoadQuery q = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql("select s from MetaSync s where s.code = :code and s.active = true order by s.metaCode asc, s.versionNo desc")
+            .parameter("code", code)
+            .pageable(PageRequest.of(0, 1))
+            .build();
+        List<MetaSync> r = secureDataManager.loadByQuery(ENTITY_CLASS, q).getContent();
+        if (r.isEmpty()) throw new NotFoundException("MetaSync not found: " + code);
+        return MetaSyncMapper.toDto(r.get(0));
     }
 
     public MetaSyncDto create(MetaSyncRequest req) {
@@ -152,8 +172,7 @@ public class MetaSyncService {
         MetaSync sync = loadOrThrow(id);
         String metaSyncCode = sync.getCode();
 
-        // Cascade delete: remove all MetaSets and MetaSetVersions extracted from this MetaSync.
-        // System-internal bulk delete — JPA @Modifying via EntityManager.
+        // System-internal bulk cascade — no starter API for @Modifying JPQL.
         if (metaSyncCode != null && !metaSyncCode.isBlank()) {
             entityManager.createQuery(
                     "DELETE FROM MetaSetVersion v WHERE v.metasyncCode = :metasyncCode")
@@ -183,6 +202,12 @@ public class MetaSyncService {
         secureDataManager.delete(ENTITY_CLASS, id);
     }
 
+    /**
+     * Initial sync — schema discovery + diff. Called from REST (admin trigger) and
+     * from the scheduled {@link MetaSyncPollingService}. Polling has no user context;
+     * writes inside this method intentionally use {@link UnconstrainedDataManager}
+     * (§2.1 scheduled job). REST callers MUST be admin-only.
+     */
     public SyncResultDto initSync(UUID metaSourceId) {
         MetaSource source = loadSource(metaSourceId);
         SchemaDto schema;
@@ -211,8 +236,7 @@ public class MetaSyncService {
                 if (!Boolean.TRUE.equals(latest.getActive()) || STATUS_OFFLINE.equals(latest.getStatus())) {
                     latest.setActive(Boolean.TRUE);
                     latest.setStatus(STATUS_ACTIVE);
-                    // System write: refresh of existing record during sync — bypass since
-                    // initSync runs as a system job (scheduled poll / admin trigger).
+                    // §2.1 system-shared write (polling).
                     unconstrainedDataManager.save(latest);
                 }
                 skipped++;
@@ -241,10 +265,10 @@ public class MetaSyncService {
             e.setChangedStatus(changedStatus);
             e.setChangedSummary(buildChangedSummary(changedStatus, source.getName(), table.name(), fields.size()));
 
+            // §2.1 system-shared write (polling).
             changedItems.add(MetaSyncMapper.toDto(unconstrainedDataManager.save(e)));
         }
 
-        // Detect bảng bị xóa
         for (MetaSync latest : findLatestPerMetaCode(metaSourceId)) {
             String metaCode = latest.getMetaCode();
             if (metaCode == null || currentTables.containsKey(metaCode) || Boolean.TRUE.equals(latest.getDeleted())) {
@@ -267,6 +291,7 @@ public class MetaSyncService {
             deleted.setVersionNo(versionNo);
             deleted.setChangedStatus("CRITICAL");
             deleted.setChangedSummary("Removed " + metaCode + " from " + source.getName());
+            // §2.1 system-shared write (polling).
             changedItems.add(MetaSyncMapper.toDto(unconstrainedDataManager.save(deleted)));
         }
 
@@ -274,6 +299,7 @@ public class MetaSyncService {
     }
 
     private SyncResultDto useOfflineMetaSync(UUID metaSourceId, RuntimeException cause) {
+        // §2.1 fallback inside initSync — polling-shared, same justification.
         List<MetaSync> latestItems = unconstrainedDataManager.loadListByJpql(
                 ENTITY_CLASS,
                 "select s from MetaSync s where s.metaSource.id = :id and s.active = true order by s.metaCode asc",
@@ -300,36 +326,16 @@ public class MetaSyncService {
                 .map(f -> {
                     String path = table.name() + "." + f.name();
                     String id = UUID.nameUUIDFromBytes(path.getBytes(StandardCharsets.UTF_8)).toString();
-                    return new FieldItem(
-                            id,
-                            SlugUtils.toSlug(f.name()),
-                            f.name(),
-                            f.type(),
-                            path,
-                            table.name(),
-                            null,
-                            Boolean.TRUE.equals(f.nullable()),
-                            Boolean.TRUE.equals(f.pk()),
-                            null
-                    );
+                    return new FieldItem(id, SlugUtils.toSlug(f.name()), f.name(), f.type(), path,
+                            table.name(), null, Boolean.TRUE.equals(f.nullable()), Boolean.TRUE.equals(f.pk()), null);
                 })
                 .toList();
     }
 
     private FieldItem tableMarker(String tableName) {
         String id = UUID.nameUUIDFromBytes(("table:" + tableName).getBytes(StandardCharsets.UTF_8)).toString();
-        return new FieldItem(
-                id,
-                SlugUtils.toSlug(tableName),
-                tableName,
-                TABLE_MARKER_DATA_TYPE,
-                tableName,
-                null,
-                null,
-                true,
-                false,
-                null
-        );
+        return new FieldItem(id, SlugUtils.toSlug(tableName), tableName, TABLE_MARKER_DATA_TYPE,
+                tableName, null, null, true, false, null);
     }
 
     private String serializeFields(List<FieldItem> fields) {
@@ -434,6 +440,7 @@ public class MetaSyncService {
     }
 
     private Optional<String> findFirstNumericCodeByMetaSourceId(UUID metaSourceId) {
+        // Native ORDER BY ... LIMIT 1 — no clean JPQL form for the regex filter.
         @SuppressWarnings("unchecked")
         List<String> r = entityManager.createNativeQuery(
                 """
@@ -450,20 +457,27 @@ public class MetaSyncService {
     }
 
     private Optional<MetaSync> findLatestByMetaSourceAndMetaCode(UUID metaSourceId, String metaCode) {
-        List<MetaSync> r = unconstrainedDataManager.loadListByJpql(
-                ENTITY_CLASS,
-                "select s from MetaSync s where s.metaSource.id = :id and s.metaCode = :code order by s.versionNo desc",
-                Map.of("id", metaSourceId, "code", metaCode), null);
+        SecuredLoadQuery q = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql("select s from MetaSync s where s.metaSource.id = :id and s.metaCode = :code order by s.versionNo desc")
+            .parameter("id", metaSourceId)
+            .parameter("code", metaCode)
+            .pageable(PageRequest.of(0, 1))
+            .build();
+        List<MetaSync> r = secureDataManager.loadByQuery(ENTITY_CLASS, q).getContent();
         return r.isEmpty() ? Optional.empty() : Optional.of(r.get(0));
     }
 
     private List<MetaSync> findLatestPerMetaCode(UUID metaSourceId) {
-        return unconstrainedDataManager.loadListByJpql(
-                ENTITY_CLASS,
-                "SELECT ms FROM MetaSync ms WHERE ms.metaSource.id = :metaSourceId " +
-                "AND ms.versionNo = (SELECT MAX(ms2.versionNo) FROM MetaSync ms2 " +
-                "                    WHERE ms2.metaSource.id = :metaSourceId AND ms2.metaCode = ms.metaCode)",
-                Map.of("metaSourceId", metaSourceId), null);
+        SecuredLoadQuery q = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql("SELECT ms FROM MetaSync ms WHERE ms.metaSource.id = :metaSourceId " +
+                  "AND ms.versionNo = (SELECT MAX(ms2.versionNo) FROM MetaSync ms2 " +
+                  "                    WHERE ms2.metaSource.id = :metaSourceId AND ms2.metaCode = ms.metaCode)")
+            .parameter("metaSourceId", metaSourceId)
+            .pageable(PageRequest.of(0, 10_000))
+            .build();
+        return secureDataManager.loadByQuery(ENTITY_CLASS, q).getContent();
     }
 
     private boolean isTableMarker(FieldItem field) {
@@ -479,10 +493,13 @@ public class MetaSyncService {
     }
 
     private boolean existsByCode(String code) {
-        return !unconstrainedDataManager.loadListByJpql(
-                ENTITY_CLASS,
-                "select s from MetaSync s where s.code = :code",
-                Map.of("code", code), null).isEmpty();
+        SecuredLoadQuery q = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql("select s from MetaSync s where s.code = :code")
+            .parameter("code", code)
+            .pageable(PageRequest.of(0, 1))
+            .build();
+        return !secureDataManager.loadByQuery(ENTITY_CLASS, q).getContent().isEmpty();
     }
 
     private int findMaxNumericCode() {
