@@ -33,10 +33,10 @@ import com.react.spring.common.exception.NotFoundException;
 import com.react.spring.meta.metaset.mapper.MetaSetMapper;
 import com.vn.security.core.security.data.SecureDataManager;
 import com.vn.security.core.security.data.SecureDataManager.EntityMutation;
-import com.vn.security.core.security.data.UnconstrainedDataManager;
+import com.vn.security.core.security.data.SecuredLoadQuery;
 import jakarta.persistence.EntityManager;
-import org.springframework.data.jpa.domain.Specification;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,13 +45,26 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
+/**
+ * All reads + writes flow through {@link SecureDataManager}. Justification:
+ * authenticated does not equal authorized — list endpoints with filters must
+ * also pass entity-level CRUD + row-level checks, not be a backdoor that
+ * bypasses RBAC. `secureDataManager.loadByQuery(...)` with a JPQL `SecuredLoadQuery`
+ * performs `checkCrud(READ)` before running the query (see SecureDataManagerImpl
+ * lines 130-137 in the starter), so dynamic filters stay inside the RBAC pipeline.
+ *
+ * The only non-SecureDataManager call here is the native MAX(CAST(code AS INTEGER))
+ * regex query, which has no JPQL equivalent. Marked clearly below.
+ */
 @Service
 @Transactional
 public class MetaSetService {
@@ -64,7 +77,10 @@ public class MetaSetService {
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     private static final Class<MetaSet> ENTITY_CLASS = MetaSet.class;
-    // Attribute names on MetaSet that this service ever writes (for EntityMutation).
+    private static final String ENTITY_CODE = "metaset";
+    private static final String MS_VERSION_CODE = "metasetversion";
+    private static final String METASYNC_CODE = "metasync";
+
     private static final List<String> METASET_WRITABLE = List.of(
         "code", "metaCode", "name", "description", "metaSource", "organization", "domain",
         "classification", "tier", "status", "publishedAt", "publishedBy", "publishedComment",
@@ -72,54 +88,57 @@ public class MetaSetService {
         "lastSyncedAt", "lastSyncStatus", "lastSyncedVersion",
         "currentVersion", "tags"
     );
+    private static final List<String> MS_VERSION_WRITABLE = List.of(
+        "dataSourceCode", "metaCode", "versionNo", "metasyncCode",
+        "fieldData", "fieldHash", "exampleData",
+        "endpointPath", "endpointConfig", "apiSetting", "operations",
+        "deleted", "changedStatus", "changedSummary"
+    );
 
     private final SecureDataManager secureDataManager;
-    // Bypass: starter SecureDataManager lacks Specification-based loadPage, by-field
-    // JPQL lookups, and direct nested-entity save (MetaSetVersion cascade timing).
-    // All uses below carry the §2.3 justification: read-only system queries OR writes
-    // gated by the outer user-initiated MetaSet save (which IS through SecureDataManager).
-    private final UnconstrainedDataManager unconstrainedDataManager;
-    // EntityManager: PostgreSQL native regex+CAST for findMaxNumericCode — no JPQL equivalent.
+    // ONLY for `findMaxNumericCode()` — PostgreSQL native regex+CAST has no JPQL form.
+    // System-internal sequence generator, read-only, no user input. Equivalent in
+    // effect to selecting nextval() on a DB sequence.
     private final EntityManager entityManager;
 
-    public MetaSetService(SecureDataManager secureDataManager,
-                          UnconstrainedDataManager unconstrainedDataManager,
-                          EntityManager entityManager) {
+    public MetaSetService(SecureDataManager secureDataManager, EntityManager entityManager) {
         this.secureDataManager = secureDataManager;
-        this.unconstrainedDataManager = unconstrainedDataManager;
         this.entityManager = entityManager;
     }
 
     @Transactional(readOnly = true)
     public Page<MetaSetDto> list(String keyword, String metaCode, UUID organizationId, UUID domainId, UUID metaSourceId, Pageable pageable) {
-        Specification<MetaSet> spec = (root, query, cb) -> cb.conjunction();
+        StringBuilder jpql = new StringBuilder("select m from MetaSet m where 1=1");
+        Map<String, Object> params = new LinkedHashMap<>();
 
         if (keyword != null && !keyword.isBlank()) {
-            String likeKeyword = "%" + keyword.toLowerCase() + "%";
-            spec = spec.and((root, query, cb) -> cb.or(
-                    cb.like(cb.lower(root.get("code")), likeKeyword),
-                    cb.like(cb.lower(root.get("name")), likeKeyword),
-                    cb.like(cb.lower(root.get("metaCode")), likeKeyword)
-            ));
+            jpql.append(" and (lower(m.code) like :kw or lower(m.name) like :kw or lower(m.metaCode) like :kw)");
+            params.put("kw", "%" + keyword.toLowerCase() + "%");
         }
-
         if (metaCode != null && !metaCode.isBlank()) {
-            spec = spec.and((root, query, cb) -> cb.like(cb.lower(root.get("metaCode")), "%" + metaCode.toLowerCase() + "%"));
+            jpql.append(" and lower(m.metaCode) like :mc");
+            params.put("mc", "%" + metaCode.toLowerCase() + "%");
         }
-
         if (organizationId != null) {
-            spec = spec.and((root, query, cb) -> cb.equal(root.get("organization").get("id"), organizationId));
+            jpql.append(" and m.organization.id = :orgId");
+            params.put("orgId", organizationId);
         }
-
         if (domainId != null) {
-            spec = spec.and((root, query, cb) -> cb.equal(root.get("domain").get("id"), domainId));
+            jpql.append(" and m.domain.id = :domId");
+            params.put("domId", domainId);
         }
-
         if (metaSourceId != null) {
-            spec = spec.and((root, query, cb) -> cb.equal(root.get("metaSource").get("id"), metaSourceId));
+            jpql.append(" and m.metaSource.id = :srcId");
+            params.put("srcId", metaSourceId);
         }
 
-        return unconstrainedDataManager.loadPage(ENTITY_CLASS, spec, pageable).map(MetaSetMapper::toDto);
+        SecuredLoadQuery query = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql(jpql.toString())
+            .parameters(params)
+            .pageable(pageable)
+            .build();
+        return secureDataManager.loadByQuery(ENTITY_CLASS, query).map(MetaSetMapper::toDto);
     }
 
     @Transactional(readOnly = true)
@@ -129,12 +148,14 @@ public class MetaSetService {
 
     @Transactional(readOnly = true)
     public List<MetaSetDto> listByMetaSource(UUID metaSourceId) {
-        return unconstrainedDataManager.loadListByJpql(
-                ENTITY_CLASS,
-                "select m from MetaSet m where m.metaSource.id = :id",
-                Map.of("id", metaSourceId),
-                null)
-                .stream().map(MetaSetMapper::toDto).toList();
+        SecuredLoadQuery query = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql("select m from MetaSet m where m.metaSource.id = :id")
+            .parameter("id", metaSourceId)
+            .pageable(PageRequest.of(0, 10_000))
+            .build();
+        return secureDataManager.loadByQuery(ENTITY_CLASS, query)
+            .getContent().stream().map(MetaSetMapper::toDto).toList();
     }
 
     @Transactional(readOnly = true)
@@ -143,11 +164,9 @@ public class MetaSetService {
             return List.of();
         }
         String code = metasyncCode.trim();
-        // Replicates the original repo JPQL: MetaSet whose currentVersion.metasyncCode = code,
-        // OR has any MetaSetVersion with metaCode=ms.metaCode and metasyncCode=code.
-        List<MetaSet> result = unconstrainedDataManager.loadListByJpql(
-                ENTITY_CLASS,
-                """
+        SecuredLoadQuery query = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql("""
                 SELECT DISTINCT ms
                 FROM MetaSet ms
                 LEFT JOIN ms.currentVersion currentVersion
@@ -159,10 +178,12 @@ public class MetaSetService {
                          AND version.metasyncCode = :metasyncCode
                    )
                 ORDER BY ms.name ASC
-                """,
-                Map.of("metasyncCode", code),
-                null);
-        return result.stream().map(MetaSetMapper::toDto).toList();
+                """)
+            .parameter("metasyncCode", code)
+            .pageable(PageRequest.of(0, 10_000))
+            .build();
+        return secureDataManager.loadByQuery(ENTITY_CLASS, query)
+            .getContent().stream().map(MetaSetMapper::toDto).toList();
     }
 
     @Transactional(readOnly = true)
@@ -190,7 +211,7 @@ public class MetaSetService {
         v.setChangedStatus("INITIAL");
         v.setChangedSummary("Initial version on creation");
         applyVersionStructure(v, source, req);
-        v = unconstrainedDataManager.save(v);
+        v = secureDataManager.save(MetaSetVersion.class, null, new EntityMutation<>(v, MS_VERSION_WRITABLE));
 
         MetaSet ms = new MetaSet();
         ms.setCode(code);
@@ -266,7 +287,7 @@ public class MetaSetService {
                 newV.setDeleted(Boolean.FALSE);
                 newV.setChangedStatus("MODIFIED");
                 newV.setChangedSummary("MetaSet versioned configuration update");
-                newV = unconstrainedDataManager.save(newV);
+                newV = secureDataManager.save(MetaSetVersion.class, null, new EntityMutation<>(newV, MS_VERSION_WRITABLE));
                 ms.setCurrentVersion(newV);
                 ms.setStatus(STATUS_DRAFT);
             } else {
@@ -275,7 +296,8 @@ public class MetaSetService {
                 currentVersion.setDataSourceCode(ms.getMetaSource() != null ? ms.getMetaSource().getCode() : null);
                 currentVersion.setChangedStatus("MODIFIED");
                 currentVersion.setChangedSummary("MetaSet versioned configuration update");
-                unconstrainedDataManager.save(currentVersion);
+                secureDataManager.save(MetaSetVersion.class, currentVersion.getId(),
+                    new EntityMutation<>(currentVersion, MS_VERSION_WRITABLE));
             }
         }
 
@@ -343,7 +365,7 @@ public class MetaSetService {
         v.setChangedStatus(sync.getChangedStatus() == null ? STATUS_WARNING : sync.getChangedStatus());
         v.setChangedSummary("Extracted from MetaSync: " + sync.getCode() + " / " + sync.getMetaCode()
                 + ". " + detailOrFallback(sync.getChangedSummary(), sync.getFieldData()));
-        v = unconstrainedDataManager.save(v);
+        v = secureDataManager.save(MetaSetVersion.class, null, new EntityMutation<>(v, MS_VERSION_WRITABLE));
 
         MetaSet ms = new MetaSet();
         ms.setCode(code);
@@ -391,7 +413,7 @@ public class MetaSetService {
         v.setChangedStatus(sync.getChangedStatus() == null ? STATUS_WARNING : sync.getChangedStatus());
         v.setChangedSummary("Updated from MetaSync: " + sync.getCode() + " / " + sync.getMetaCode()
                 + ". " + detailOrFallback(sync.getChangedSummary(), sync.getFieldData()));
-        v = unconstrainedDataManager.save(v);
+        v = secureDataManager.save(MetaSetVersion.class, null, new EntityMutation<>(v, MS_VERSION_WRITABLE));
 
         ms.setCurrentVersion(v);
         ms.setLastSyncedAt(OffsetDateTime.now());
@@ -403,17 +425,19 @@ public class MetaSetService {
 
     public List<MetaSetDto> extractFromMetaSource(UUID metaSourceId, MetaSyncExtractRequest req) {
         MetaSource source = loadSource(metaSourceId);
-        List<MetaSync> syncs = unconstrainedDataManager.loadListByJpql(
-                MetaSync.class,
-                """
-                SELECT ms FROM MetaSync ms
-                WHERE ms.metaSource.id = :metaSourceId
-                AND ms.active = true
-                AND ms.deleted = false
-                ORDER BY ms.metaCode ASC
-                """,
-                Map.of("metaSourceId", metaSourceId),
-                null);
+        SecuredLoadQuery syncQuery = SecuredLoadQuery.builder()
+            .entityCode(METASYNC_CODE)
+            .jpql("""
+                SELECT s FROM MetaSync s
+                WHERE s.metaSource.id = :metaSourceId
+                AND s.active = true
+                AND s.deleted = false
+                ORDER BY s.metaCode ASC
+                """)
+            .parameter("metaSourceId", metaSourceId)
+            .pageable(PageRequest.of(0, 10_000))
+            .build();
+        List<MetaSync> syncs = secureDataManager.loadByQuery(MetaSync.class, syncQuery).getContent();
         if (syncs.isEmpty()) {
             return List.of();
         }
@@ -512,7 +536,7 @@ public class MetaSetService {
             v.setChangedStatus(sync.getChangedStatus() == null ? STATUS_WARNING : sync.getChangedStatus());
             v.setChangedSummary("Extracted from MetaSource: " + source.getCode() + " / " + metaCode
                     + ". " + detailOrFallback(sync.getChangedSummary(), sync.getFieldData()));
-            v = unconstrainedDataManager.save(v);
+            v = secureDataManager.save(MetaSetVersion.class, null, new EntityMutation<>(v, MS_VERSION_WRITABLE));
 
             ms.setCurrentVersion(v);
             ms.setLastSyncedVersion(nextNo);
@@ -570,19 +594,11 @@ public class MetaSetService {
     private MetaSetApiConfigDto defaultApiConfig() {
         return new MetaSetApiConfigDto(
                 List.of(new MetaSetApiOperationDto(
-                        "list",
-                        "List",
-                        "LIST",
-                        "GET",
-                        "/",
-                        "LIST",
-                        null,
-                        Boolean.TRUE
+                        "list", "List", "LIST", "GET", "/", "LIST", null, Boolean.TRUE
                 )),
                 new MetaSetApiSettingDto(
                         new MetaSetApiAuthDto("NONE", null, null, null, null, null, null),
-                        List.of(),
-                        30000
+                        List.of(), 30000
                 ),
                 new MetaSetEndpointConfigDto(null, "list", "LIST")
         );
@@ -886,19 +902,26 @@ public class MetaSetService {
     // ---- Internal helpers ----
 
     private Optional<MetaSet> findByCode(String code) {
-        List<MetaSet> result = unconstrainedDataManager.loadListByJpql(
-                ENTITY_CLASS,
-                "select m from MetaSet m where m.code = :code",
-                Map.of("code", code), null);
-        return result.isEmpty() ? Optional.empty() : Optional.of(result.get(0));
+        SecuredLoadQuery query = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql("select m from MetaSet m where m.code = :code")
+            .parameter("code", code)
+            .pageable(PageRequest.of(0, 1))
+            .build();
+        List<MetaSet> r = secureDataManager.loadByQuery(ENTITY_CLASS, query).getContent();
+        return r.isEmpty() ? Optional.empty() : Optional.of(r.get(0));
     }
 
     private Optional<MetaSet> findFirstByMetaSourceIdAndMetaCode(UUID sourceId, String metaCode) {
-        List<MetaSet> result = unconstrainedDataManager.loadListByJpql(
-                ENTITY_CLASS,
-                "select m from MetaSet m where m.metaSource.id = :sourceId and m.metaCode = :metaCode",
-                Map.of("sourceId", sourceId, "metaCode", metaCode), null);
-        return result.isEmpty() ? Optional.empty() : Optional.of(result.get(0));
+        SecuredLoadQuery query = SecuredLoadQuery.builder()
+            .entityCode(ENTITY_CODE)
+            .jpql("select m from MetaSet m where m.metaSource.id = :sourceId and m.metaCode = :metaCode")
+            .parameter("sourceId", sourceId)
+            .parameter("metaCode", metaCode)
+            .pageable(PageRequest.of(0, 1))
+            .build();
+        List<MetaSet> r = secureDataManager.loadByQuery(ENTITY_CLASS, query).getContent();
+        return r.isEmpty() ? Optional.empty() : Optional.of(r.get(0));
     }
 
     private boolean existsByCode(String code) {
@@ -906,6 +929,9 @@ public class MetaSetService {
     }
 
     private int findMaxNumericCode() {
+        // PostgreSQL native regex+CAST — no JPQL equivalent. Read-only system query
+        // for sequence generation; no user input. Equivalent in spirit to nextval()
+        // on a DB sequence. Not exposed via REST.
         Object result = entityManager.createNativeQuery(
                 "SELECT COALESCE(MAX(CAST(code AS INTEGER)), 0) FROM core_meta_set WHERE code ~ '^[0-9]+$'"
             ).getSingleResult();
@@ -913,18 +939,26 @@ public class MetaSetService {
     }
 
     private List<MetaSetVersion> findVersionsByMetaCodeDesc(String metaCode) {
-        return unconstrainedDataManager.loadListByJpql(
-                MetaSetVersion.class,
-                "select v from MetaSetVersion v where v.metaCode = :metaCode order by v.versionNo desc",
-                Map.of("metaCode", metaCode), null);
+        SecuredLoadQuery query = SecuredLoadQuery.builder()
+            .entityCode(MS_VERSION_CODE)
+            .jpql("select v from MetaSetVersion v where v.metaCode = :metaCode order by v.versionNo desc")
+            .parameter("metaCode", metaCode)
+            .pageable(PageRequest.of(0, 10_000))
+            .build();
+        return secureDataManager.loadByQuery(MetaSetVersion.class, query).getContent();
     }
 
+    /**
+     * Load tags by id one-by-one through SecureDataManager so each Tag passes its
+     * own READ + row-level check. Faster bulk JPQL would need Tag.jpqlAllowed=true
+     * which is out of scope (only MetaSet refactor in this pass).
+     */
     private List<Tag> loadTags(Collection<UUID> ids) {
         if (ids == null || ids.isEmpty()) return List.of();
-        return unconstrainedDataManager.loadListByJpql(
-                Tag.class,
-                "select t from Tag t where t.id in :ids",
-                Map.of("ids", ids), null);
+        return ids.stream()
+            .map(id -> secureDataManager.loadOne(Tag.class, id)
+                .orElseThrow(() -> new NotFoundException("Tag not found: " + id)))
+            .collect(Collectors.toList());
     }
 
     private String generateNextNumericCode() {
@@ -990,20 +1024,12 @@ public class MetaSetService {
     }
 
     private record VersionFingerprint(
-            String fieldData,
-            String fieldHash,
-            String exampleData,
-            String endpointPath,
-            String endpointConfig,
-            String apiSettingConfig,
+            String fieldData, String fieldHash, String exampleData,
+            String endpointPath, String endpointConfig, String apiSettingConfig,
             List<OperationFingerprint> operations
     ) {}
 
     private record OperationFingerprint(
-            String code,
-            String name,
-            String operationType,
-            String config,
-            Integer sortOrder
+            String code, String name, String operationType, String config, Integer sortOrder
     ) {}
 }
