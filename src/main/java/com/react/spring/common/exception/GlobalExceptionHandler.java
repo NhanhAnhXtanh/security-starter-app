@@ -4,6 +4,7 @@ import jakarta.validation.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -88,6 +89,11 @@ public class GlobalExceptionHandler {
         if (status == null) status = HttpStatus.INTERNAL_SERVER_ERROR;
         String message = ex.getReason() != null ? ex.getReason() : ex.getMessage();
         return body(status, status.name(), message, null);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<Map<String, Object>> handleAccessDenied(AccessDeniedException ex) {
+        return body(HttpStatus.FORBIDDEN, "FORBIDDEN", ex.getMessage(), null);
     }
 
     @ExceptionHandler(Exception.class)
