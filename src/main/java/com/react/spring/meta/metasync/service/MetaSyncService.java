@@ -209,7 +209,7 @@ public class MetaSyncService {
      * (§2.1 scheduled job). REST callers MUST be admin-only.
      */
     public SyncResultDto initSync(UUID metaSourceId) {
-        MetaSource source = loadSource(metaSourceId);
+        MetaSource source = loadSourceSystem(metaSourceId);
         SchemaDto schema;
         try {
             schema = connectionService.fetchSchema(metaSourceId);
@@ -221,14 +221,14 @@ public class MetaSyncService {
         int skipped = 0;
         Map<String, SchemaDto.TableDto> currentTables = schema.tables().stream()
                 .collect(Collectors.toMap(SchemaDto.TableDto::name, Function.identity(), (a, b) -> a, LinkedHashMap::new));
-        String syncCode = resolveMetaSyncCode(source);
+        String syncCode = resolveMetaSyncCode(source, true);
 
         for (SchemaDto.TableDto table : schema.tables()) {
             List<FieldItem> fields = toFieldItems(table);
             String fieldDataJson = serializeFields(fields);
             String structuralHash = FieldHashUtils.structural(fields);
 
-            MetaSync latest = findLatestByMetaSourceAndMetaCode(metaSourceId, table.name()).orElse(null);
+            MetaSync latest = findLatestByMetaSourceAndMetaCodeSystem(metaSourceId, table.name()).orElse(null);
 
             if (latest != null
                     && !Boolean.TRUE.equals(latest.getDeleted())
@@ -269,7 +269,7 @@ public class MetaSyncService {
             changedItems.add(MetaSyncMapper.toDto(unconstrainedDataManager.save(e)));
         }
 
-        for (MetaSync latest : findLatestPerMetaCode(metaSourceId)) {
+        for (MetaSync latest : findLatestPerMetaCodeSystem(metaSourceId)) {
             String metaCode = latest.getMetaCode();
             if (metaCode == null || currentTables.containsKey(metaCode) || Boolean.TRUE.equals(latest.getDeleted())) {
                 continue;
@@ -432,11 +432,15 @@ public class MetaSyncService {
     }
 
     private String resolveMetaSyncCode(MetaSource source) {
+        return resolveMetaSyncCode(source, false);
+    }
+
+    private String resolveMetaSyncCode(MetaSource source, boolean systemContext) {
         if (source == null || source.getId() == null) {
             throw new IllegalStateException("MetaSource is required for MetaSync");
         }
         return findFirstNumericCodeByMetaSourceId(source.getId())
-                .orElseGet(this::generateNextNumericCode);
+                .orElseGet(() -> generateNextNumericCode(systemContext));
     }
 
     private Optional<String> findFirstNumericCodeByMetaSourceId(UUID metaSourceId) {
@@ -468,6 +472,15 @@ public class MetaSyncService {
         return r.isEmpty() ? Optional.empty() : Optional.of(r.get(0));
     }
 
+    private Optional<MetaSync> findLatestByMetaSourceAndMetaCodeSystem(UUID metaSourceId, String metaCode) {
+        List<MetaSync> r = unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "select s from MetaSync s where s.metaSource.id = :id and s.metaCode = :code order by s.versionNo desc",
+                Map.of("id", metaSourceId, "code", metaCode),
+                null);
+        return r.isEmpty() ? Optional.empty() : Optional.of(r.get(0));
+    }
+
     private List<MetaSync> findLatestPerMetaCode(UUID metaSourceId) {
         SecuredLoadQuery q = SecuredLoadQuery.builder()
             .entityCode(ENTITY_CODE)
@@ -478,6 +491,16 @@ public class MetaSyncService {
             .pageable(PageRequest.of(0, 10_000))
             .build();
         return secureDataManager.loadByQuery(ENTITY_CLASS, q).getContent();
+    }
+
+    private List<MetaSync> findLatestPerMetaCodeSystem(UUID metaSourceId) {
+        return unconstrainedDataManager.loadListByJpql(
+                ENTITY_CLASS,
+                "SELECT ms FROM MetaSync ms WHERE ms.metaSource.id = :metaSourceId " +
+                "AND ms.versionNo = (SELECT MAX(ms2.versionNo) FROM MetaSync ms2 " +
+                "                    WHERE ms2.metaSource.id = :metaSourceId AND ms2.metaCode = ms.metaCode)",
+                Map.of("metaSourceId", metaSourceId),
+                null);
     }
 
     private boolean isTableMarker(FieldItem field) {
@@ -493,6 +516,17 @@ public class MetaSyncService {
     }
 
     private boolean existsByCode(String code) {
+        return existsByCode(code, false);
+    }
+
+    private boolean existsByCode(String code, boolean systemContext) {
+        if (systemContext) {
+            return !unconstrainedDataManager.loadListByJpql(
+                    ENTITY_CLASS,
+                    "select s from MetaSync s where s.code = :code",
+                    Map.of("code", code),
+                    null).isEmpty();
+        }
         SecuredLoadQuery q = SecuredLoadQuery.builder()
             .entityCode(ENTITY_CODE)
             .jpql("select s from MetaSync s where s.code = :code")
@@ -510,12 +544,16 @@ public class MetaSyncService {
     }
 
     private String generateNextNumericCode() {
+        return generateNextNumericCode(false);
+    }
+
+    private String generateNextNumericCode(boolean systemContext) {
         int next = findMaxNumericCode() + 1;
         String candidate;
         do {
             candidate = String.format("%05d", next);
             next++;
-        } while (existsByCode(candidate));
+        } while (existsByCode(candidate, systemContext));
         return candidate;
     }
 
@@ -527,5 +565,15 @@ public class MetaSyncService {
     private MetaSource loadSource(UUID id) {
         return secureDataManager.loadOne(MetaSource.class, id)
                 .orElseThrow(() -> new NotFoundException("MetaSource not found: " + id));
+    }
+
+    private MetaSource loadSourceSystem(UUID id) {
+        List<MetaSource> r = unconstrainedDataManager.loadListByJpql(
+                MetaSource.class,
+                "select s from MetaSource s where s.id = :id",
+                Map.of("id", id),
+                null);
+        if (r.isEmpty()) throw new NotFoundException("MetaSource not found: " + id);
+        return r.get(0);
     }
 }
