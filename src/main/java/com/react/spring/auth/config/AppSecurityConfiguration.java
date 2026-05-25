@@ -25,6 +25,7 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.expression.WebExpressionAuthorizationManager;
 
 /**
  * JWT-stateless security configuration owned by this consumer. The starter no longer ships
@@ -59,7 +60,18 @@ public class AppSecurityConfiguration {
                 ).permitAll()
                 .requestMatchers("/management/health/**", "/management/info").permitAll()
                 .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
-                .requestMatchers("/api/admin/**").hasAuthority("ROLE_ADMIN")
+                // Delegate to the starter's resolver, not Spring's default hasAuthority(),
+                // because jwtAuthenticationConverter() below intentionally returns an empty
+                // authority set on every JWT — so Authentication.getAuthorities() is always
+                // empty and Spring's built-in .hasAuthority(...) would deny every request,
+                // even from real admins. @securityCoreAuthorization goes through
+                // CurrentUserAuthorityProvider -> app_user_role and matches the same authority
+                // source the starter's @PreAuthorize annotations already use.
+                .requestMatchers("/api/admin/**").access(
+                    new WebExpressionAuthorizationManager(
+                        "@securityCoreAuthorization.hasAuthority('ROLE_ADMIN')"
+                    )
+                )
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().permitAll()
             )
