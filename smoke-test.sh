@@ -38,9 +38,11 @@ check() {
 }
 
 # ============ AUTH ============
-JWT=$(curl -s -X POST $BASE/api/authenticate -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"admin","rememberMe":false}' \
-  | sed -nE 's/.*"id_token"[ ]*:[ ]*"([^"]+)".*/\1/p')
+# /api/auth/login is the consumer's AuthController (the starter no longer ships
+# /api/authenticate in v0.1.0). Response shape: {"accessToken":"...","refreshToken":"...","expiresInSeconds":...}.
+JWT=$(curl -s -X POST $BASE/api/auth/login -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin"}' \
+  | sed -nE 's/.*"accessToken"[ ]*:[ ]*"([^"]+)".*/\1/p')
 if [ -n "$JWT" ]; then
   RESULTS+=("PASS  AUTH admin login JWT len=${#JWT}")
   PASS=$((PASS+1))
