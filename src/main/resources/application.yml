@@ -38,13 +38,6 @@ spring:
   mail:
     host: localhost
 
-  security:
-    oauth2:
-      resourceserver:
-        jwt:
-          authority-prefix: ''
-          authorities-claim-name: auth
-
 server:
   port: 8081
 
@@ -53,14 +46,9 @@ management:
     mail:
       enabled: false
 
-# Security Core starter configuration
+# Security Core starter — authorization only.
+# Consumer owns authentication (see app.jwt / app.seed below).
 security-core:
-  security:
-    jwt:
-      # DEV ONLY — rotate before production.
-      base64-secret: 1W/dgYDz2SfLLj2WgUkOrQclguYVhYPsLZE0rJ2za+UrYXPG0yPXN3lLk6HVXLyp43tMTEZ/dqkr+Oe4/skxjQ==
-      token-validity-in-seconds: 86400
-      token-validity-in-seconds-for-remember-me: 2592000
   cors:
     allowed-origins: 'http://localhost:3000,http://localhost:5173,http://localhost:4200'
     allowed-methods: '*'
@@ -70,11 +58,17 @@ security-core:
   fetch-plans:
     config: classpath:fetch-plans.yml
   cache:
-    # Must stay enabled — starter's UserService injects CacheManager.
-    # Setting to false skips CacheConfiguration entirely and breaks UserService wiring.
     enabled: true
-  # DEV ONLY — seeds admin/admin user on boot. DISABLE in production.
+
+# Consumer-owned auth (this app)
+app:
+  jwt:
+    # DEV ONLY — rotate before production. HS512, base64-encoded 64+ byte key.
+    base64-secret: 1W/dgYDz2SfLLj2WgUkOrQclguYVhYPsLZE0rJ2za+UrYXPG0yPXN3lLk6HVXLyp43tMTEZ/dqkr+Oe4/skxjQ==
+    access-token-ttl-seconds: 86400
+    refresh-token-ttl-seconds: 2592000
   seed:
+    # DEV ONLY — bootstraps an admin/admin user on first boot. Disable in prod.
     enabled: true
     username: admin
     password: admin
