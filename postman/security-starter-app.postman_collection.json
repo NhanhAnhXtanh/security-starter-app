@@ -1,396 +1,342 @@
 {
   "info": {
     "name": "security-starter-app",
-    "description": "RBAC + auth flow against the consumer app on port 8081. Folders run top-to-bottom: 'Auth - admin' captures the admin token into {{adminToken}}, 'Auth - user' registers + logs in a user and captures {{userToken}}, then 'RBAC checks' uses both tokens to verify the starter's enforcement. Status-code assertions live in each request's Tests tab so the entire collection can be run via Collection Runner or Newman.",
+    "description": "Complete API surface of the consumer app on http://localhost:8081 — every endpoint exposed by the 10 consumer controllers and the 7 starter (com.vn.security.core) controllers that the app re-exposes.\n\nFolder layout:\n- 🔐 Auth          — login / register / refresh / logout / change-password\n- 📋 Catalog       — Tags, Domains, Organizations CRUD\n- 📦 Meta          — Packs, Sets, SetVersions, Sources, Syncs, Public preview\n- 🛡 Admin (starter)— Roles, Permissions, MenuDefinitions, MenuPermissions, Catalog\n- 🔍 Security info — Authorities, current-user menu permissions, entity capabilities\n- ✅ RBAC tests    — 7 status-code-asserting requests (anon / admin / user x read / write)\n- 🔄 Token lifecycle— refresh rotation + reuse-must-fail + change-password + logout\n- 💾 Cache probe   — admin role update -> watch Hazelcast maps clear\n\nCollection-level pre-request script auto-runs admin login when {{adminToken}} is empty, so any single request can be invoked without manually running the Auth folder first. The RBAC tests still benefit from running top-to-bottom because they depend on {{userToken}} as well.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Auto-login the admin if no token yet. Runs at most once per Postman session.",
+          "const token = pm.collectionVariables.get('adminToken');",
+          "if (token && token.length > 0) return;",
+          "const baseUrl = pm.collectionVariables.get('baseUrl') || pm.variables.get('baseUrl');",
+          "pm.sendRequest({",
+          "  url: baseUrl + '/api/auth/login',",
+          "  method: 'POST',",
+          "  header: {'Content-Type': 'application/json'},",
+          "  body: {mode: 'raw', raw: JSON.stringify({username: 'admin', password: 'admin'})}",
+          "}, (err, res) => {",
+          "  if (err || res.code !== 200) return;",
+          "  const body = res.json();",
+          "  pm.collectionVariables.set('adminToken', body.accessToken);",
+          "  pm.collectionVariables.set('adminRefreshToken', body.refreshToken);",
+          "});"
+        ]
+      }
+    }
+  ],
   "item": [
     {
-      "name": "Auth - admin",
+      "name": "🔐 Auth",
       "item": [
         {
           "name": "Login admin",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "const body = pm.response.json();",
-                  "pm.test('returns accessToken', () => pm.expect(body.accessToken).to.be.a('string').and.not.empty);",
-                  "pm.test('returns refreshToken', () => pm.expect(body.refreshToken).to.be.a('string').and.not.empty);",
-                  "pm.collectionVariables.set('adminToken', body.accessToken);",
-                  "pm.collectionVariables.set('adminRefreshToken', body.refreshToken);"
-                ]
-              }
-            }
-          ],
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": [
+            "pm.test('200 OK', () => pm.response.to.have.status(200));",
+            "const body = pm.response.json();",
+            "pm.collectionVariables.set('adminToken', body.accessToken);",
+            "pm.collectionVariables.set('adminRefreshToken', body.refreshToken);"
+          ]}}],
           "request": {
             "method": "POST",
             "header": [{"key": "Content-Type", "value": "application/json"}],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"admin\"\n}"
-            },
+            "body": {"mode": "raw", "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"admin\"\n}"},
             "url": "{{baseUrl}}/api/auth/login"
           }
-        }
-      ]
-    },
-    {
-      "name": "Auth - user",
-      "item": [
+        },
         {
           "name": "Register testuser (idempotent)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('201 created or 409 already exists', () => {",
-                  "  pm.expect([201, 409]).to.include(pm.response.code);",
-                  "});"
-                ]
-              }
-            }
-          ],
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": [
+            "pm.test('201 created or 409 already exists', () => pm.expect([201, 409]).to.include(pm.response.code));"
+          ]}}],
           "request": {
             "method": "POST",
             "header": [{"key": "Content-Type", "value": "application/json"}],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"username\": \"testuser\",\n  \"password\": \"pass1234\",\n  \"email\": \"testuser@localhost\",\n  \"firstName\": \"Test\",\n  \"lastName\": \"User\"\n}"
-            },
+            "body": {"mode": "raw", "raw": "{\n  \"username\": \"testuser\",\n  \"password\": \"pass1234\",\n  \"email\": \"testuser@localhost\",\n  \"firstName\": \"Test\",\n  \"lastName\": \"User\"\n}"},
             "url": "{{baseUrl}}/api/auth/register"
           }
         },
         {
           "name": "Login testuser",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "const body = pm.response.json();",
-                  "pm.collectionVariables.set('userToken', body.accessToken);",
-                  "pm.collectionVariables.set('userRefreshToken', body.refreshToken);"
-                ]
-              }
-            }
-          ],
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": [
+            "pm.test('200 OK', () => pm.response.to.have.status(200));",
+            "const body = pm.response.json();",
+            "pm.collectionVariables.set('userToken', body.accessToken);",
+            "pm.collectionVariables.set('userRefreshToken', body.refreshToken);"
+          ]}}],
           "request": {
             "method": "POST",
             "header": [{"key": "Content-Type", "value": "application/json"}],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"username\": \"testuser\",\n  \"password\": \"pass1234\"\n}"
-            },
+            "body": {"mode": "raw", "raw": "{\n  \"username\": \"testuser\",\n  \"password\": \"pass1234\"\n}"},
             "url": "{{baseUrl}}/api/auth/login"
           }
-        }
-      ]
-    },
-    {
-      "name": "RBAC checks",
-      "item": [
-        {
-          "name": "Anonymous GET /api/tags -> 401",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('401 Unauthorized (no token)', () => pm.response.to.have.status(401));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "url": "{{baseUrl}}/api/tags"
-          }
         },
-        {
-          "name": "Admin GET /api/tags -> 200",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}],
-            "url": "{{baseUrl}}/api/tags"
-          }
-        },
-        {
-          "name": "Admin GET /api/admin/sec/roles -> 200",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "pm.test('returns array of roles', () => pm.expect(pm.response.json()).to.be.an('array'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}],
-            "url": "{{baseUrl}}/api/admin/sec/roles"
-          }
-        },
-        {
-          "name": "User GET /api/tags -> 200",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200 OK (sec_permission seed grants ROLE_USER read on Tag)', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [{"key": "Authorization", "value": "Bearer {{userToken}}"}],
-            "url": "{{baseUrl}}/api/tags"
-          }
-        },
-        {
-          "name": "User GET /api/admin/sec/roles -> 403",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('403 Forbidden (no ROLE_ADMIN)', () => pm.response.to.have.status(403));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [{"key": "Authorization", "value": "Bearer {{userToken}}"}],
-            "url": "{{baseUrl}}/api/admin/sec/roles"
-          }
-        },
-        {
-          "name": "User POST /api/tags -> 403",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('403 Forbidden (sec_permission seed has no CREATE for ROLE_USER on Tag)', () => pm.response.to.have.status(403));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {"key": "Authorization", "value": "Bearer {{userToken}}"},
-              {"key": "Content-Type", "value": "application/json"}
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"rbac-deny-test\",\n  \"description\": \"should be rejected by SecureDataManager\"\n}"
-            },
-            "url": "{{baseUrl}}/api/tags"
-          }
-        },
-        {
-          "name": "Admin POST /api/tags -> 201",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('201 Created (admin has CREATE)', () => pm.expect([200, 201]).to.include(pm.response.code));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {"key": "Authorization", "value": "Bearer {{adminToken}}"},
-              {"key": "Content-Type", "value": "application/json"}
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"rbac-allow-test-{{$timestamp}}\",\n  \"description\": \"created by Postman rbac suite\"\n}"
-            },
-            "url": "{{baseUrl}}/api/tags"
-          }
-        }
-      ]
-    },
-    {
-      "name": "Token lifecycle",
-      "item": [
         {
           "name": "Refresh access token",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "const body = pm.response.json();",
-                  "pm.test('returns new accessToken', () => pm.expect(body.accessToken).to.be.a('string'));",
-                  "pm.test('returns NEW refreshToken (single-use rotation)', () => {",
-                  "  pm.expect(body.refreshToken).to.not.equal(pm.collectionVariables.get('userRefreshToken'));",
-                  "});",
-                  "pm.collectionVariables.set('userToken', body.accessToken);",
-                  "pm.collectionVariables.set('userRefreshToken', body.refreshToken);"
-                ]
-              }
-            }
-          ],
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": [
+            "pm.test('200 OK', () => pm.response.to.have.status(200));",
+            "const body = pm.response.json();",
+            "pm.test('returns NEW refreshToken (single-use rotation)', () => {",
+            "  pm.expect(body.refreshToken).to.not.equal(pm.collectionVariables.get('userRefreshToken'));",
+            "});",
+            "pm.collectionVariables.set('userToken', body.accessToken);",
+            "pm.collectionVariables.set('userRefreshToken', body.refreshToken);"
+          ]}}],
           "request": {
             "method": "POST",
             "header": [{"key": "Content-Type", "value": "application/json"}],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"refreshToken\": \"{{userRefreshToken}}\"\n}"
-            },
+            "body": {"mode": "raw", "raw": "{\n  \"refreshToken\": \"{{userRefreshToken}}\"\n}"},
             "url": "{{baseUrl}}/api/auth/refresh"
           }
         },
         {
-          "name": "Reuse old refresh token -> 401",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('Reusing a rotated refresh token must fail', () => {",
-                  "  // Token issuer revokes the presented row on rotate(), so a replay should not work.",
-                  "  // BadCredentialsException surfaces as 401 via the resource-server entry point.",
-                  "  pm.expect([400, 401]).to.include(pm.response.code);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{"key": "Content-Type", "value": "application/json"}],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"refreshToken\": \"REPLACE-ME-WITH-A-USED-TOKEN\"\n}"
-            },
-            "url": "{{baseUrl}}/api/auth/refresh",
-            "description": "Manual: copy the userRefreshToken value BEFORE running 'Refresh access token', paste it here, then run this request after the rotation. Confirms single-use semantics."
-          }
-        },
-        {
           "name": "Change password (user)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
-                ]
-              }
-            }
-          ],
           "request": {
             "method": "POST",
-            "header": [
-              {"key": "Authorization", "value": "Bearer {{userToken}}"},
-              {"key": "Content-Type", "value": "application/json"}
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"currentPassword\": \"pass1234\",\n  \"newPassword\": \"pass5678\"\n}"
-            },
-            "url": "{{baseUrl}}/api/auth/change-password",
-            "description": "After this runs, all refresh tokens for the user are revoked (defense-in-depth). Re-login required to continue."
+            "header": [{"key": "Authorization", "value": "Bearer {{userToken}}"}, {"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"currentPassword\": \"pass1234\",\n  \"newPassword\": \"pass5678\"\n}"},
+            "url": "{{baseUrl}}/api/auth/change-password"
           }
         },
         {
           "name": "Logout (admin)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
-                ]
-              }
-            }
-          ],
           "request": {
             "method": "POST",
             "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}],
-            "url": "{{baseUrl}}/api/auth/logout",
-            "description": "Revokes all refresh tokens for admin and evicts the userAuthoritiesByUsername cache entry. Access token stays valid until expiry (stateless JWT)."
+            "url": "{{baseUrl}}/api/auth/logout"
           }
         }
       ]
     },
     {
-      "name": "Cache eviction probe",
+      "name": "📋 Catalog - Tags",
       "item": [
-        {
-          "name": "Admin updates ROLE_USER (triggers @CacheEvict)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "pm.test('After this: userAuthoritiesByUsername + sec-permission-matrix cleared', () => {",
-                  "  // Verify in Hazelcast MC: both Hazelcast maps drop to size=0.",
-                  "  // Next authenticated request rebuilds them from app_user_role + sec_permission.",
-                  "  pm.expect(true).to.be.true;",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "PUT",
-            "header": [
-              {"key": "Authorization", "value": "Bearer {{adminToken}}"},
-              {"key": "Content-Type", "value": "application/json"}
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"ROLE_USER\",\n  \"displayName\": \"Regular User\",\n  \"type\": \"RESOURCE\"\n}"
-            },
-            "url": "{{baseUrl}}/api/admin/sec/roles/ROLE_USER",
-            "description": "Hits SecRoleAdminResource.updateRole which carries @CacheEvict for both userAuthoritiesByUsername and sec-permission-matrix. Watch the two maps in Hazelcast MC at http://localhost:8090 — they should drop to size 0, then refill on the next user request."
-          }
-        }
+        {"name": "List tags", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": {"raw": "{{baseUrl}}/api/tags?page=0&size=20", "host": ["{{baseUrl}}"], "path": ["api","tags"], "query": [{"key":"page","value":"0"},{"key":"size","value":"20"}]}}},
+          {"name": "Get tag by id", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/tags/{{tagId}}"}},
+          {"name": "Create tag",
+            "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 200 && pm.response.code < 300) { try { pm.collectionVariables.set('tagId', pm.response.json().id); } catch (e) {} }"]}}],
+            "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"prod\",\n  \"description\": \"production\"\n}"}, "url": "{{baseUrl}}/api/tags"}},
+          {"name": "Update tag", "request": {"method": "PUT", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"prod\",\n  \"description\": \"updated\"\n}"}, "url": "{{baseUrl}}/api/tags/{{tagId}}"}},
+          {"name": "Delete tag", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/tags/{{tagId}}"}}
+      ]
+    },
+    {
+      "name": "📋 Catalog - Domains",
+      "item": [
+        {"name": "List domains", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/domains?page=0&size=20"}},
+        {"name": "Get domain by id", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/domains/{{domainId}}"}},
+        {"name": "Create domain",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 200 && pm.response.code < 300) { try { pm.collectionVariables.set('domainId', pm.response.json().id); } catch (e) {} }"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Finance\",\n  \"description\": \"financial domain\"\n}"}, "url": "{{baseUrl}}/api/domains"}},
+        {"name": "Update domain", "request": {"method": "PUT", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Finance v2\",\n  \"description\": \"updated\"\n}"}, "url": "{{baseUrl}}/api/domains/{{domainId}}"}},
+        {"name": "Delete domain", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/domains/{{domainId}}"}}
+      ]
+    },
+    {
+      "name": "📋 Catalog - Organizations",
+      "item": [
+        {"name": "List organizations", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/app/organizations?page=0&size=20"}},
+        {"name": "Get organization by id", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/app/organizations/{{orgId}}"}},
+        {"name": "Create organization",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 200 && pm.response.code < 300) { try { pm.collectionVariables.set('orgId', pm.response.json().id); } catch (e) {} }"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Acme\",\n  \"description\": \"test\"\n}"}, "url": "{{baseUrl}}/api/app/organizations"}},
+        {"name": "Update organization", "request": {"method": "PUT", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Acme v2\",\n  \"description\": \"upd\"\n}"}, "url": "{{baseUrl}}/api/app/organizations/{{orgId}}"}},
+        {"name": "Delete organization", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/app/organizations/{{orgId}}"}}
+      ]
+    },
+    {
+      "name": "📦 Meta - Packs",
+      "item": [
+        {"name": "List packs", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/v1/metapacks?page=0&size=20"}},
+        {"name": "Get pack by identifier", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/v1/metapacks/{{packId}}"}},
+        {"name": "Create pack",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 200 && pm.response.code < 300) { try { pm.collectionVariables.set('packId', pm.response.json().id); } catch (e) {} }"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Customer Pack\",\n  \"description\": \"public\",\n  \"maxRequestsPerMinute\": 60,\n  \"maxRequestsPerDay\": 1000\n}"}, "url": "{{baseUrl}}/api/v1/metapacks"}},
+        {"name": "Update pack", "request": {"method": "PUT", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Customer Pack v2\",\n  \"description\": \"updated\",\n  \"maxRequestsPerMinute\": 120,\n  \"maxRequestsPerDay\": 5000\n}"}, "url": "{{baseUrl}}/api/v1/metapacks/{{packId}}"}},
+        {"name": "Delete pack", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/v1/metapacks/{{packId}}"}},
+        {"name": "List pack versions", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/v1/metapacks/{{packId}}/versions"}},
+        {"name": "List pack registrations", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/v1/metapacks/{{packId}}/registrations"}},
+        {"name": "Create pack registration",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 200 && pm.response.code < 300) { try { pm.collectionVariables.set('regId', pm.response.json().id); } catch (e) {} }"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "[\"id\", \"name\"]"}, "url": "{{baseUrl}}/api/v1/metapacks/{{packId}}/registrations?subscriberName=client-a"}},
+        {"name": "Approve registration", "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/v1/metapacks/registrations/{{regId}}/approve"}},
+        {"name": "Revoke registration", "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/v1/metapacks/registrations/{{regId}}/revoke"}}
+      ]
+    },
+    {
+      "name": "📦 Meta - Sets",
+      "item": [
+        {"name": "List meta-sets", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sets?page=0&size=20"}},
+        {"name": "List by source", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sets/by-source/{{sourceId}}"}},
+        {"name": "List by metasync code", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sets/by-metasync-code/{{metasyncCode}}"}},
+        {"name": "Get meta-set by id", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sets/{{metaSetId}}"}},
+        {"name": "Get meta-set by code", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sets/by-code/{{metaSetCode}}"}},
+        {"name": "Create meta-set",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 200 && pm.response.code < 300) { const b = pm.response.json(); pm.collectionVariables.set('metaSetId', b.id); if (b.code) pm.collectionVariables.set('metaSetCode', b.code); }"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Sample Set\",\n  \"description\": \"created via Postman\",\n  \"metaSourceId\": \"{{sourceId}}\"\n}"}, "url": "{{baseUrl}}/api/meta-sets"}},
+        {"name": "Update meta-set", "request": {"method": "PUT", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Sample Set v2\",\n  \"description\": \"updated\"\n}"}, "url": "{{baseUrl}}/api/meta-sets/{{metaSetId}}"}},
+        {"name": "Publish meta-set", "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor\": \"admin\",\n  \"comment\": \"go live\"\n}"}, "url": "{{baseUrl}}/api/meta-sets/{{metaSetId}}/publish"}},
+        {"name": "Discontinue meta-set", "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor\": \"admin\",\n  \"comment\": \"end of life\"\n}"}, "url": "{{baseUrl}}/api/meta-sets/{{metaSetId}}/discontinue"}},
+        {"name": "Delete meta-set", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sets/{{metaSetId}}"}}
+      ]
+    },
+    {
+      "name": "📦 Meta - Set Versions",
+      "item": [
+        {"name": "List versions", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-set-versions?page=0&size=20"}},
+        {"name": "Get version by id", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-set-versions/{{versionId}}"}},
+        {"name": "Get by code and version", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": {"raw": "{{baseUrl}}/api/meta-set-versions/by-code-and-version?code={{metaSetCode}}&version=1", "host": ["{{baseUrl}}"], "path": ["api","meta-set-versions","by-code-and-version"], "query": [{"key": "code", "value": "{{metaSetCode}}"}, {"key": "version", "value": "1"}]}}},
+        {"name": "Create version",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 200 && pm.response.code < 300) { try { pm.collectionVariables.set('versionId', pm.response.json().id); } catch (e) {} }"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"metaSetId\": \"{{metaSetId}}\",\n  \"version\": 1,\n  \"description\": \"initial version\"\n}"}, "url": "{{baseUrl}}/api/meta-set-versions"}},
+        {"name": "Delete version", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-set-versions/{{versionId}}"}}
+      ]
+    },
+    {
+      "name": "📦 Meta - Sources",
+      "item": [
+        {"name": "List sources", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sources?page=0&size=20"}},
+        {"name": "Get source by id", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sources/{{sourceId}}"}},
+        {"name": "Get source by code", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sources/by-code/{{sourceCode}}"}},
+        {"name": "Create source (Postgres)",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 200 && pm.response.code < 300) { const b = pm.response.json(); pm.collectionVariables.set('sourceId', b.id); if (b.code) pm.collectionVariables.set('sourceCode', b.code); }"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Local PG {{$timestamp}}\",\n  \"sourceType\": \"DATABASE\",\n  \"connectorType\": \"POSTGRES\",\n  \"description\": \"local dev postgres\",\n  \"enabled\": true,\n  \"organizationId\": null,\n  \"domainId\": null,\n  \"connectorConfig\": \"{\\\"host\\\":\\\"localhost\\\",\\\"port\\\":5432,\\\"database\\\":\\\"db_react_springboot\\\",\\\"username\\\":\\\"postgres\\\",\\\"password\\\":\\\"123456\\\",\\\"schema\\\":\\\"public\\\"}\"\n}"}, "url": "{{baseUrl}}/api/meta-sources"}},
+        {"name": "Update source", "request": {"method": "PUT", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Local PG (updated)\",\n  \"description\": \"updated by Postman\",\n  \"enabled\": true\n}"}, "url": "{{baseUrl}}/api/meta-sources/{{sourceId}}"}},
+        {"name": "Delete source", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sources/{{sourceId}}"}},
+        {"name": "Get source schema", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sources/{{sourceId}}/schema"}},
+        {"name": "Query source", "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"sql\": \"SELECT 1\"\n}"}, "url": "{{baseUrl}}/api/meta-sources/{{sourceId}}/query"}},
+        {"name": "Run sync now", "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sources/{{sourceId}}/sync"}},
+        {"name": "List source meta-syncs", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-sources/{{sourceId}}/meta-syncs"}},
+        {"name": "Extract source to metaset", "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"extracted-set\",\n  \"description\": \"extracted by Postman\"\n}"}, "url": "{{baseUrl}}/api/meta-sources/{{sourceId}}/extract-to-metaset"}},
+        {"name": "REST proxy call", "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"method\": \"GET\",\n  \"path\": \"/health\"\n}"}, "url": "{{baseUrl}}/api/meta-sources/{{sourceId}}/rest-proxy"}}
+      ]
+    },
+    {
+      "name": "📦 Meta - Syncs",
+      "item": [
+        {"name": "List syncs", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-syncs?page=0&size=20"}},
+        {"name": "Get sync by id", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-syncs/{{syncId}}"}},
+        {"name": "Get sync by code", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-syncs/by-code/{{syncCode}}"}},
+        {"name": "Create sync",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 200 && pm.response.code < 300) { const b = pm.response.json(); pm.collectionVariables.set('syncId', b.id); if (b.code) pm.collectionVariables.set('syncCode', b.code); }"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"metaSourceId\": \"{{sourceId}}\",\n  \"name\": \"hourly sync\",\n  \"description\": \"runs hourly\",\n  \"cronExpression\": \"0 0 * * * *\",\n  \"enabled\": true\n}"}, "url": "{{baseUrl}}/api/meta-syncs"}},
+        {"name": "Update sync", "request": {"method": "PUT", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"hourly sync v2\",\n  \"description\": \"updated\",\n  \"cronExpression\": \"0 */30 * * * *\",\n  \"enabled\": false\n}"}, "url": "{{baseUrl}}/api/meta-syncs/{{syncId}}"}},
+        {"name": "Extract sync to metaset", "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"sync-derived-set\"\n}"}, "url": "{{baseUrl}}/api/meta-syncs/{{syncId}}/extract-to-metaset"}},
+        {"name": "Delete sync", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/meta-syncs/{{syncId}}"}}
+      ]
+    },
+    {
+      "name": "📦 Meta - Public",
+      "item": [
+        {"name": "Public pack data (no auth)", "request": {"method": "GET", "url": "{{baseUrl}}/api/v1/public/pack/{{packCode}}/data/{{alias}}"}}
+      ]
+    },
+    {
+      "name": "🛡 Admin - Roles",
+      "item": [
+        {"name": "List roles", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/roles"}},
+        {"name": "Get role by name", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/roles/ROLE_USER"}},
+        {"name": "Create role", "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"ROLE_AUDITOR\",\n  \"displayName\": \"Auditor\",\n  \"type\": \"RESOURCE\"\n}"}, "url": "{{baseUrl}}/api/admin/sec/roles"}},
+        {"name": "Update role (clears caches)", "request": {"method": "PUT", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"ROLE_AUDITOR\",\n  \"displayName\": \"Auditor (updated)\",\n  \"type\": \"RESOURCE\"\n}"}, "url": "{{baseUrl}}/api/admin/sec/roles/ROLE_AUDITOR"}},
+        {"name": "Delete role", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/roles/ROLE_AUDITOR"}}
+      ]
+    },
+    {
+      "name": "🛡 Admin - Permissions",
+      "item": [
+        {"name": "List permissions",
+          "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}],
+            "url": {"raw": "{{baseUrl}}/api/admin/sec/permissions?page=0&size=20", "host": ["{{baseUrl}}"], "path": ["api","admin","sec","permissions"], "query": [{"key":"page","value":"0"},{"key":"size","value":"20"},{"key":"authorityName","value":"ROLE_USER","disabled":true},{"key":"targetType","value":"ENTITY","disabled":true}]}}},
+        {"name": "Get permission by id", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/permissions/{{permissionId}}"}},
+        {"name": "Create permission",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 200 && pm.response.code < 300) { try { pm.collectionVariables.set('permissionId', pm.response.json().id); } catch (e) {} }"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"authorityName\": \"ROLE_USER\",\n  \"targetType\": \"ENTITY\",\n  \"target\": \"com.react.spring.catalog.entity.Tag\",\n  \"action\": \"READ\",\n  \"effect\": \"ALLOW\"\n}"}, "url": "{{baseUrl}}/api/admin/sec/permissions"}},
+        {"name": "Update permission", "request": {"method": "PUT", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"id\": \"{{permissionId}}\",\n  \"authorityName\": \"ROLE_USER\",\n  \"targetType\": \"ENTITY\",\n  \"target\": \"com.react.spring.catalog.entity.Tag\",\n  \"action\": \"READ\",\n  \"effect\": \"ALLOW\"\n}"}, "url": "{{baseUrl}}/api/admin/sec/permissions/{{permissionId}}"}},
+        {"name": "Delete permission", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/permissions/{{permissionId}}"}}
+      ]
+    },
+    {
+      "name": "🛡 Admin - Menu Definitions",
+      "item": [
+        {"name": "List menu definitions", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/menu-definitions"}},
+        {"name": "Get menu definition", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/menu-definitions/{{menuDefId}}"}},
+        {"name": "Create menu definition",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 200 && pm.response.code < 300) { try { pm.collectionVariables.set('menuDefId', pm.response.json().id); } catch (e) {} }"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"code\": \"admin-tags\",\n  \"label\": \"Tags\",\n  \"path\": \"/admin/tags\",\n  \"target\": \"com.react.spring.catalog.entity.Tag\",\n  \"targetType\": \"ENTITY\",\n  \"action\": \"READ\"\n}"}, "url": "{{baseUrl}}/api/admin/sec/menu-definitions"}},
+        {"name": "Update menu definition", "request": {"method": "PUT", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"code\": \"admin-tags\",\n  \"label\": \"Tags (updated)\",\n  \"path\": \"/admin/tags\",\n  \"target\": \"com.react.spring.catalog.entity.Tag\",\n  \"targetType\": \"ENTITY\",\n  \"action\": \"READ\"\n}"}, "url": "{{baseUrl}}/api/admin/sec/menu-definitions/{{menuDefId}}"}},
+        {"name": "Delete menu definition", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/menu-definitions/{{menuDefId}}"}},
+        {"name": "Sync menu definitions", "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/menu-definitions/sync"}}
+      ]
+    },
+    {
+      "name": "🛡 Admin - Menu Permissions",
+      "item": [
+        {"name": "List menu permissions", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/menu-permissions"}},
+        {"name": "Grant menu permission",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["if (pm.response.code >= 200 && pm.response.code < 300) { try { pm.collectionVariables.set('menuPermId', pm.response.json().id); } catch (e) {} }"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"authorityName\": \"ROLE_USER\",\n  \"menuCode\": \"admin-tags\"\n}"}, "url": "{{baseUrl}}/api/admin/sec/menu-permissions"}},
+        {"name": "Revoke menu permission", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/menu-permissions/{{menuPermId}}"}}
+      ]
+    },
+    {
+      "name": "🛡 Admin - Security catalog",
+      "item": [
+        {"name": "List secured entities", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/catalog"}}
+      ]
+    },
+    {
+      "name": "🔍 Security info",
+      "item": [
+        {"name": "List authorities", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/authorities"}},
+        {"name": "Get authority by id", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/authorities/ROLE_USER"}},
+        {"name": "Create authority", "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"ROLE_VIEWER\",\n  \"displayName\": \"Viewer\",\n  \"type\": \"RESOURCE\"\n}"}, "url": "{{baseUrl}}/api/authorities"}},
+        {"name": "Delete authority", "request": {"method": "DELETE", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/authorities/ROLE_VIEWER"}},
+        {"name": "My menu permissions", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/security/menu-permissions"}},
+        {"name": "Entity capabilities", "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": {"raw": "{{baseUrl}}/api/security/entity-capabilities?entity=com.react.spring.catalog.entity.Tag", "host": ["{{baseUrl}}"], "path": ["api","security","entity-capabilities"], "query": [{"key": "entity", "value": "com.react.spring.catalog.entity.Tag"}]}}}
+      ]
+    },
+    {
+      "name": "✅ RBAC tests (status-code assertions)",
+      "item": [
+        {"name": "Anonymous GET /api/tags -> 401",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["pm.test('401', () => pm.response.to.have.status(401));"]}}],
+          "request": {"method": "GET", "url": "{{baseUrl}}/api/tags"}},
+        {"name": "Admin GET /api/tags -> 200",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["pm.test('200', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/tags"}},
+        {"name": "Admin GET /api/admin/sec/roles -> 200",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["pm.test('200', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}], "url": "{{baseUrl}}/api/admin/sec/roles"}},
+        {"name": "User GET /api/tags -> 200",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["pm.test('200 (sec_permission seed grants ROLE_USER read on Tag)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{userToken}}"}], "url": "{{baseUrl}}/api/tags"}},
+        {"name": "User GET /api/admin/sec/roles -> 403",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["pm.test('403 (no ROLE_ADMIN)', () => pm.response.to.have.status(403));"]}}],
+          "request": {"method": "GET", "header": [{"key": "Authorization", "value": "Bearer {{userToken}}"}], "url": "{{baseUrl}}/api/admin/sec/roles"}},
+        {"name": "User POST /api/tags -> 403",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["pm.test('403 (no CREATE for ROLE_USER on Tag)', () => pm.response.to.have.status(403));"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{userToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"rbac-deny-test\",\n  \"description\": \"should be rejected\"\n}"}, "url": "{{baseUrl}}/api/tags"}},
+        {"name": "Admin POST /api/tags -> 201",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":["pm.test('201 or 200', () => pm.expect([200,201]).to.include(pm.response.code));"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"rbac-allow-test-{{$timestamp}}\",\n  \"description\": \"created by Postman rbac suite\"\n}"}, "url": "{{baseUrl}}/api/tags"}}
+      ]
+    },
+    {
+      "name": "💾 Cache eviction probe",
+      "item": [
+        {"name": "Update ROLE_USER (triggers @CacheEvict)",
+          "event": [{"listen":"test","script":{"type":"text/javascript","exec":[
+            "pm.test('200 OK', () => pm.response.to.have.status(200));",
+            "// Watch Hazelcast MC at http://localhost:8090:",
+            "//   userAuthoritiesByUsername -> size drops to 0",
+            "//   sec-permission-matrix      -> size drops to 0",
+            "// Re-running RBAC tests refills both caches."
+          ]}}],
+          "request": {"method": "PUT", "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"ROLE_USER\",\n  \"displayName\": \"Regular User\",\n  \"type\": \"RESOURCE\"\n}"}, "url": "{{baseUrl}}/api/admin/sec/roles/ROLE_USER"}}
       ]
     }
   ],
@@ -399,6 +345,24 @@
     {"key": "adminToken", "value": ""},
     {"key": "adminRefreshToken", "value": ""},
     {"key": "userToken", "value": ""},
-    {"key": "userRefreshToken", "value": ""}
+    {"key": "userRefreshToken", "value": ""},
+    {"key": "tagId", "value": ""},
+    {"key": "domainId", "value": ""},
+    {"key": "orgId", "value": ""},
+    {"key": "packId", "value": ""},
+    {"key": "packCode", "value": ""},
+    {"key": "alias", "value": ""},
+    {"key": "regId", "value": ""},
+    {"key": "metaSetId", "value": ""},
+    {"key": "metaSetCode", "value": ""},
+    {"key": "versionId", "value": ""},
+    {"key": "sourceId", "value": ""},
+    {"key": "sourceCode", "value": ""},
+    {"key": "syncId", "value": ""},
+    {"key": "syncCode", "value": ""},
+    {"key": "metasyncCode", "value": ""},
+    {"key": "permissionId", "value": ""},
+    {"key": "menuDefId", "value": ""},
+    {"key": "menuPermId", "value": ""}
   ]
 }

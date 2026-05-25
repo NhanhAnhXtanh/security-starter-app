@@ -1,46 +1,70 @@
 # Postman collection — security-starter-app
 
-End-to-end RBAC + auth flow against the backend on `http://localhost:8081`.
+**100 requests across 18 folders** covering every endpoint exposed by the consumer app and the starter (`com.vn.security.core`) at `http://localhost:8081`.
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `security-starter-app.postman_collection.json` | All requests, with status-code asserts on the RBAC suite. |
+| `security-starter-app.postman_environment.json` | `baseUrl` + admin/test credentials. |
 
 ## Import
 
-1. **Postman** → File → Import → drop both JSON files:
-   - `security-starter-app.postman_collection.json` (requests + tests)
-   - `security-starter-app.postman_environment.json` (host + credentials)
-2. Top-right env dropdown → select **"security-starter-app (local dev)"**.
+Postman → File → Import → drop both JSON files. Top-right env dropdown → select **"security-starter-app (local dev)"**.
 
-## Run order
-
-The collection assumes the four folders run top to bottom because tokens captured by earlier requests are read by later ones via collection variables:
-
-| Folder | Captures | Reads |
-|---|---|---|
-| `Auth - admin` | `adminToken`, `adminRefreshToken` | — |
-| `Auth - user` | `userToken`, `userRefreshToken` | — |
-| `RBAC checks` | — | `adminToken`, `userToken` |
-| `Token lifecycle` | rotates `userToken` / `userRefreshToken` | `userRefreshToken`, `adminToken` |
-| `Cache eviction probe` | — | `adminToken` |
-
-Use **Collection Runner** (▶︎ next to the collection name) or the CLI:
+Or via Newman:
 
 ```bash
-# requires npm i -g newman
+npm i -g newman
+cd postman
 newman run security-starter-app.postman_collection.json \
-       -e security-starter-app.postman_environment.json
+       -e security-starter-app.postman_environment.json \
+       --folder "✅ RBAC tests (status-code assertions)"   # only run the assertion suite
 ```
 
-## What each folder verifies
+## Folder map
 
-- **Auth - admin**: `POST /api/auth/login` returns `accessToken` + `refreshToken`, status 200.
-- **Auth - user**: register (`201` first run / `409` on reruns — both accepted), then login.
-- **RBAC checks** — the core of the suite:
-  - anonymous request → `401`,
-  - admin can read tags and list roles,
-  - `ROLE_USER` can read tags (sec_permission seed grants READ),
-  - `ROLE_USER` is denied at the URL gate on `/api/admin/**` (`403`),
-  - `ROLE_USER` is denied at the data layer (`SecureDataManager`) on `POST /api/tags` (`403`).
-- **Token lifecycle**: refresh rotation (new refresh token must differ from the previous one), reuse-after-rotation must fail (single-use semantics), change password (revokes all refresh tokens), logout.
-- **Cache eviction probe**: `PUT /api/admin/sec/roles/ROLE_USER` triggers `@CacheEvict` on both `userAuthoritiesByUsername` and `sec-permission-matrix`. Pair this with Hazelcast Management Center (see below) to watch the maps drop and refill.
+| Folder | Count | Notes |
+|---|---:|---|
+| 🔐 Auth | 6 | login (admin + testuser), register, refresh, change-password, logout |
+| 📋 Catalog - Tags | 5 | CRUD on `/api/tags`, captures `{{tagId}}` on create |
+| 📋 Catalog - Domains | 5 | CRUD on `/api/domains`, captures `{{domainId}}` |
+| 📋 Catalog - Organizations | 5 | CRUD on `/api/app/organizations`, captures `{{orgId}}` |
+| 📦 Meta - Packs | 10 | CRUD + versions + registrations (create / approve / revoke) |
+| 📦 Meta - Sets | 10 | CRUD + by-source / by-code / by-metasync-code + publish / discontinue |
+| 📦 Meta - Set Versions | 5 | CRUD + lookup by code+version |
+| 📦 Meta - Sources | 12 | CRUD + schema / query / sync now / extract-to-metaset / REST proxy |
+| 📦 Meta - Syncs | 7 | CRUD + by-code + extract-to-metaset |
+| 📦 Meta - Public | 1 | unauthenticated pack data preview |
+| 🛡 Admin - Roles | 5 | starter SecRoleAdminResource (cache evicts) |
+| 🛡 Admin - Permissions | 5 | starter SecPermissionAdminResource (cache evicts) |
+| 🛡 Admin - Menu Definitions | 6 | CRUD + `/sync` to reseed menu defs |
+| 🛡 Admin - Menu Permissions | 3 | grant / list / revoke menu access |
+| 🛡 Admin - Security catalog | 1 | list `@SecuredEntity` registrations |
+| 🔍 Security info | 6 | authorities CRUD + current-user menu + entity capabilities |
+| ✅ RBAC tests | 7 | status-code asserting: anon / admin / user × read / write |
+| 💾 Cache eviction probe | 1 | PUT role → watch Hazelcast maps clear |
+
+## Auto-login
+
+A **collection-level pre-request script** auto-logs-in as `admin/admin` and stores the JWT into `{{adminToken}}` whenever the variable is empty. Net effect: pick any request in any folder and it just works — no need to manually run the Auth folder first. For the user-token folders (RBAC tests, refresh), run `🔐 Auth → Login testuser` once per session.
+
+## Captured variables
+
+These are populated by `Tests` scripts on create-style requests so later requests in the same folder reuse the freshly created entity ID:
+
+| Captured by | Variable |
+|---|---|
+| `Login admin` | `adminToken`, `adminRefreshToken` |
+| `Login testuser` | `userToken`, `userRefreshToken` |
+| `Refresh access token` | rotates `userToken`, `userRefreshToken` |
+| `Create tag/domain/org` | `tagId` / `domainId` / `orgId` |
+| `Create pack` / `Create pack registration` | `packId` / `regId` |
+| `Create meta-set` / `Create version` | `metaSetId` + `metaSetCode` / `versionId` |
+| `Create source (Postgres)` | `sourceId` + `sourceCode` |
+| `Create sync` | `syncId` + `syncCode` |
+| `Create permission/menu definition/menu permission` | `permissionId` / `menuDefId` / `menuPermId` |
 
 ## Watching the Hazelcast cache
 
@@ -56,7 +80,7 @@ Maps worth opening (**Storage → Maps**):
 
 | Map | Populated by | Cleared by |
 |---|---|---|
-| `userAuthoritiesByUsername` | `DefaultCurrentUserAuthorityResolver` on first auth per username | admin role/permission writes, `UserAuthorityCacheService.evict(...)` |
+| `userAuthoritiesByUsername` | `DefaultCurrentUserAuthorityResolver` on first auth per username | admin role/permission writes (folders 🛡 Admin - Roles / Permissions), `UserAuthorityCacheService.evict(...)` from consumer code |
 | `sec-permission-matrix` | `RequestPermissionSnapshot.getMatrix` on first request per role-set | admin permission writes |
 
-Run `RBAC checks` once → both maps populate. Run `Cache eviction probe` → both drop to 0. Re-run `RBAC checks` → they refill.
+Run **RBAC tests** once → both maps populate. Run **Cache eviction probe** → both drop to 0. Re-run **RBAC tests** → they refill.
