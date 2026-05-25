@@ -21,7 +21,7 @@ repositories {
 
 dependencies {
     // Security Core starter (via JitPack) — pulls in web/security/jpa/validation/jackson-hibernate7/liquibase/hazelcast/…
-    implementation 'com.github.NhanhAnhXtanh:spring-boot-security-core-starter:0.0.3'
+    implementation 'com.github.NhanhAnhXtanh:spring-boot-security-core-starter:v0.1.0'
 
     // Nashorn JS engine for Hazelcast Management Center scripting (Nashorn was removed from JDK 15+)
     // Dev-only: only needed when debugging cache via MC Scripting tab
