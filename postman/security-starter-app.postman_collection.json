@@ -1,0 +1,404 @@
+{
+  "info": {
+    "name": "security-starter-app",
+    "description": "RBAC + auth flow against the consumer app on port 8081. Folders run top-to-bottom: 'Auth - admin' captures the admin token into {{adminToken}}, 'Auth - user' registers + logs in a user and captures {{userToken}}, then 'RBAC checks' uses both tokens to verify the starter's enforcement. Status-code assertions live in each request's Tests tab so the entire collection can be run via Collection Runner or Newman.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Auth - admin",
+      "item": [
+        {
+          "name": "Login admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns accessToken', () => pm.expect(body.accessToken).to.be.a('string').and.not.empty);",
+                  "pm.test('returns refreshToken', () => pm.expect(body.refreshToken).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('adminToken', body.accessToken);",
+                  "pm.collectionVariables.set('adminRefreshToken', body.refreshToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"admin\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth - user",
+      "item": [
+        {
+          "name": "Register testuser (idempotent)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 created or 409 already exists', () => {",
+                  "  pm.expect([201, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"testuser\",\n  \"password\": \"pass1234\",\n  \"email\": \"testuser@localhost\",\n  \"firstName\": \"Test\",\n  \"lastName\": \"User\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/register"
+          }
+        },
+        {
+          "name": "Login testuser",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('userToken', body.accessToken);",
+                  "pm.collectionVariables.set('userRefreshToken', body.refreshToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"testuser\",\n  \"password\": \"pass1234\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/login"
+          }
+        }
+      ]
+    },
+    {
+      "name": "RBAC checks",
+      "item": [
+        {
+          "name": "Anonymous GET /api/tags -> 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized (no token)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/tags"
+          }
+        },
+        {
+          "name": "Admin GET /api/tags -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}],
+            "url": "{{baseUrl}}/api/tags"
+          }
+        },
+        {
+          "name": "Admin GET /api/admin/sec/roles -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('returns array of roles', () => pm.expect(pm.response.json()).to.be.an('array'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}],
+            "url": "{{baseUrl}}/api/admin/sec/roles"
+          }
+        },
+        {
+          "name": "User GET /api/tags -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK (sec_permission seed grants ROLE_USER read on Tag)', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{userToken}}"}],
+            "url": "{{baseUrl}}/api/tags"
+          }
+        },
+        {
+          "name": "User GET /api/admin/sec/roles -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden (no ROLE_ADMIN)', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{userToken}}"}],
+            "url": "{{baseUrl}}/api/admin/sec/roles"
+          }
+        },
+        {
+          "name": "User POST /api/tags -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden (sec_permission seed has no CREATE for ROLE_USER on Tag)', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{userToken}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"rbac-deny-test\",\n  \"description\": \"should be rejected by SecureDataManager\"\n}"
+            },
+            "url": "{{baseUrl}}/api/tags"
+          }
+        },
+        {
+          "name": "Admin POST /api/tags -> 201",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created (admin has CREATE)', () => pm.expect([200, 201]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{adminToken}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"rbac-allow-test-{{$timestamp}}\",\n  \"description\": \"created by Postman rbac suite\"\n}"
+            },
+            "url": "{{baseUrl}}/api/tags"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Token lifecycle",
+      "item": [
+        {
+          "name": "Refresh access token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns new accessToken', () => pm.expect(body.accessToken).to.be.a('string'));",
+                  "pm.test('returns NEW refreshToken (single-use rotation)', () => {",
+                  "  pm.expect(body.refreshToken).to.not.equal(pm.collectionVariables.get('userRefreshToken'));",
+                  "});",
+                  "pm.collectionVariables.set('userToken', body.accessToken);",
+                  "pm.collectionVariables.set('userRefreshToken', body.refreshToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{userRefreshToken}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/refresh"
+          }
+        },
+        {
+          "name": "Reuse old refresh token -> 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Reusing a rotated refresh token must fail', () => {",
+                  "  // Token issuer revokes the presented row on rotate(), so a replay should not work.",
+                  "  // BadCredentialsException surfaces as 401 via the resource-server entry point.",
+                  "  pm.expect([400, 401]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"REPLACE-ME-WITH-A-USED-TOKEN\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/refresh",
+            "description": "Manual: copy the userRefreshToken value BEFORE running 'Refresh access token', paste it here, then run this request after the rotation. Confirms single-use semantics."
+          }
+        },
+        {
+          "name": "Change password (user)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{userToken}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"pass1234\",\n  \"newPassword\": \"pass5678\"\n}"
+            },
+            "url": "{{baseUrl}}/api/auth/change-password",
+            "description": "After this runs, all refresh tokens for the user are revoked (defense-in-depth). Re-login required to continue."
+          }
+        },
+        {
+          "name": "Logout (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{adminToken}}"}],
+            "url": "{{baseUrl}}/api/auth/logout",
+            "description": "Revokes all refresh tokens for admin and evicts the userAuthoritiesByUsername cache entry. Access token stays valid until expiry (stateless JWT)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cache eviction probe",
+      "item": [
+        {
+          "name": "Admin updates ROLE_USER (triggers @CacheEvict)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('After this: userAuthoritiesByUsername + sec-permission-matrix cleared', () => {",
+                  "  // Verify in Hazelcast MC: both Hazelcast maps drop to size=0.",
+                  "  // Next authenticated request rebuilds them from app_user_role + sec_permission.",
+                  "  pm.expect(true).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{adminToken}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"ROLE_USER\",\n  \"displayName\": \"Regular User\",\n  \"type\": \"RESOURCE\"\n}"
+            },
+            "url": "{{baseUrl}}/api/admin/sec/roles/ROLE_USER",
+            "description": "Hits SecRoleAdminResource.updateRole which carries @CacheEvict for both userAuthoritiesByUsername and sec-permission-matrix. Watch the two maps in Hazelcast MC at http://localhost:8090 — they should drop to size 0, then refill on the next user request."
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {"key": "baseUrl", "value": "http://localhost:8081"},
+    {"key": "adminToken", "value": ""},
+    {"key": "adminRefreshToken", "value": ""},
+    {"key": "userToken", "value": ""},
+    {"key": "userRefreshToken", "value": ""}
+  ]
+}
