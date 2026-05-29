@@ -10,6 +10,7 @@ import java.util.List;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -25,6 +26,7 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.expression.DefaultHttpSecurityExpressionHandler;
 import org.springframework.security.web.access.expression.WebExpressionAuthorizationManager;
 
 /**
@@ -46,7 +48,18 @@ import org.springframework.security.web.access.expression.WebExpressionAuthoriza
 public class AppSecurityConfiguration {
 
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain filterChain(HttpSecurity http, ApplicationContext applicationContext) throws Exception {
+        // SpEL bean reference @securityCoreAuthorization requires a BeanResolver in the evaluation
+        // context. WebExpressionAuthorizationManager's default expression handler is not
+        // lifecycle-injected with ApplicationContext, so we wire one explicitly — otherwise every
+        // /api/admin/** request 500s with EL1057E "No bean resolver registered".
+        DefaultHttpSecurityExpressionHandler expressionHandler = new DefaultHttpSecurityExpressionHandler();
+        expressionHandler.setApplicationContext(applicationContext);
+        WebExpressionAuthorizationManager adminAccess = new WebExpressionAuthorizationManager(
+            "@securityCoreAuthorization.hasAuthority('ROLE_ADMIN')"
+        );
+        adminAccess.setExpressionHandler(expressionHandler);
+
         return http
             .csrf(csrf -> csrf.disable())
             .cors(cors -> {})
@@ -67,11 +80,7 @@ public class AppSecurityConfiguration {
                 // even from real admins. @securityCoreAuthorization goes through
                 // CurrentUserAuthorityProvider -> app_user_role and matches the same authority
                 // source the starter's @PreAuthorize annotations already use.
-                .requestMatchers("/api/admin/**").access(
-                    new WebExpressionAuthorizationManager(
-                        "@securityCoreAuthorization.hasAuthority('ROLE_ADMIN')"
-                    )
-                )
+                .requestMatchers("/api/admin/**").access(adminAccess)
                 .requestMatchers("/api/**").authenticated()
                 .anyRequest().permitAll()
             )
