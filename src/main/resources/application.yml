@@ -79,3 +79,10 @@ metasync:
   polling:
     enabled: true
     cron: '*/30 * * * * *'
+
+# Hazelcast client — bật để app kết nối tới member Hazelcast trên Docker
+# thay vì khởi tạo embedded instance trong JVM.
+app.hazelcast.client:
+  enabled: true
+  cluster-name: dev
+  members: 127.0.0.1:5701

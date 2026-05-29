@@ -23,6 +23,11 @@ dependencies {
     // Security Core starter (via JitPack) — pulls in web/security/jpa/validation/jackson-hibernate7/liquibase/hazelcast/…
     implementation 'com.github.NhanhAnhXtanh:spring-boot-security-core-starter:v0.1.1'
 
+    // Hazelcast client classes for HazelcastClientConfig (override starter's embedded instance to
+    // connect to external Docker member). Starter declares hazelcast as implementation-scope so
+    // its classes are not on the consumer compile classpath — declare explicitly here.
+    implementation 'com.hazelcast:hazelcast:5.5.0'
+
     // Nashorn JS engine for Hazelcast Management Center scripting (Nashorn was removed from JDK 15+)
     // Dev-only: only needed when debugging cache via MC Scripting tab
     developmentOnly 'org.openjdk.nashorn:nashorn-core:15.4'
