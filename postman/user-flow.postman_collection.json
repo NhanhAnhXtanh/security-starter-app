@@ -1,0 +1,488 @@
+{
+  "info": {
+    "name": "DB React Springboot BE - Full",
+    "description": "Auth + phân quyền (no token / ROLE_USER / ROLE_ADMIN) + CRUD Catalog/Meta + Admin Starter (/api/admin/sec/**). Token tự lưu vào collection var qua test script.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8081" },
+    { "key": "username", "value": "testuser01" },
+    { "key": "password", "value": "P@ssw0rd!" },
+    { "key": "newPassword", "value": "N3wP@ssw0rd!" },
+    { "key": "email", "value": "testuser01@example.com" },
+    { "key": "userAccessToken", "value": "" },
+    { "key": "userRefreshToken", "value": "" },
+    { "key": "adminAccessToken", "value": "" },
+    { "key": "adminRefreshToken", "value": "" },
+    { "key": "accessToken", "value": "" },
+    { "key": "refreshToken", "value": "" },
+    { "key": "tagId", "value": "" },
+    { "key": "domainId", "value": "" },
+    { "key": "organizationId", "value": "" },
+    { "key": "metaSourceId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "0. Auth flow (user)",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/register", "host": ["{{baseUrl}}"], "path": ["api","auth","register"] },
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\",\n  \"email\": \"{{email}}\",\n  \"firstName\": \"Test\",\n  \"lastName\": \"User\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Register 201 hoặc 409', () => pm.expect([201,409]).to.include(pm.response.code));"
+          ]}}]
+        },
+        {
+          "name": "Login user",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api","auth","login"] },
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"{{password}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Login user 200', () => pm.response.to.have.status(200));",
+            "const j = pm.response.json();",
+            "pm.collectionVariables.set('userAccessToken', j.accessToken);",
+            "pm.collectionVariables.set('userRefreshToken', j.refreshToken);",
+            "pm.collectionVariables.set('accessToken', j.accessToken);",
+            "pm.collectionVariables.set('refreshToken', j.refreshToken);"
+          ]}}]
+        },
+        {
+          "name": "Login admin (seeded)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api","auth","login"] },
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"admin\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Login admin 200', () => pm.response.to.have.status(200));",
+            "const j = pm.response.json();",
+            "pm.collectionVariables.set('adminAccessToken', j.accessToken);",
+            "pm.collectionVariables.set('adminRefreshToken', j.refreshToken);"
+          ]}}]
+        },
+        {
+          "name": "Authenticate check (user)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{userAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/authenticate", "host": ["{{baseUrl}}"], "path": ["api","authenticate"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200', () => pm.response.to.have.status(200));"
+          ]}}]
+        },
+        {
+          "name": "Refresh (user)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/refresh", "host": ["{{baseUrl}}"], "path": ["api","auth","refresh"] },
+            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{userRefreshToken}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200', () => pm.response.to.have.status(200));",
+            "const j = pm.response.json();",
+            "pm.collectionVariables.set('userAccessToken', j.accessToken);",
+            "pm.collectionVariables.set('userRefreshToken', j.refreshToken);"
+          ]}}]
+        },
+        {
+          "name": "Change password",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{userAccessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/auth/change-password", "host": ["{{baseUrl}}"], "path": ["api","auth","change-password"] },
+            "body": { "mode": "raw", "raw": "{\n  \"currentPassword\": \"{{password}}\",\n  \"newPassword\": \"{{newPassword}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('204', () => pm.response.to.have.status(204));",
+            "const oldP = pm.collectionVariables.get('password');",
+            "const newP = pm.collectionVariables.get('newPassword');",
+            "pm.collectionVariables.set('password', newP);",
+            "pm.collectionVariables.set('newPassword', oldP);"
+          ]}}]
+        },
+        {
+          "name": "Logout (user)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{userAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/logout", "host": ["{{baseUrl}}"], "path": ["api","auth","logout"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('204', () => pm.response.to.have.status(204));"
+          ]}}]
+        }
+      ]
+    },
+    {
+      "name": "1. Authorization probe",
+      "item": [
+        {
+          "name": "No token → /api/tags (401)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/api/tags", "host": ["{{baseUrl}}"], "path": ["api","tags"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Unauthenticated → 401', () => pm.response.to.have.status(401));"
+          ]}}]
+        },
+        {
+          "name": "User token → /api/admin/sec/roles (403)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{userAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/sec/roles", "host": ["{{baseUrl}}"], "path": ["api","admin","sec","roles"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Non-admin → 403', () => pm.response.to.have.status(403));"
+          ]}}]
+        },
+        {
+          "name": "Admin token → /api/admin/sec/roles (200)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/sec/roles", "host": ["{{baseUrl}}"], "path": ["api","admin","sec","roles"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Admin → 200', () => pm.response.to.have.status(200));"
+          ]}}]
+        },
+        {
+          "name": "User token → /api/tags GET (200 hoặc 403)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{userAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/tags", "host": ["{{baseUrl}}"], "path": ["api","tags"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Authenticated → 200 (đọc public) hoặc 403 (chưa cấp permission)', () => pm.expect([200,403]).to.include(pm.response.code));",
+            "console.log('Tag READ permission for ROLE_USER:', pm.response.code === 200 ? 'GRANTED' : 'DENIED');"
+          ]}}]
+        },
+        {
+          "name": "User token → /api/tags POST (403 expected)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{userAccessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/tags", "host": ["{{baseUrl}}"], "path": ["api","tags"] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"probe-tag\",\n  \"slug\": \"probe-tag\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('User CREATE Tag → 200/201 (granted) hoặc 403 (denied)', () => pm.expect([200,201,403]).to.include(pm.response.code));",
+            "console.log('Tag CREATE permission for ROLE_USER:', [200,201].includes(pm.response.code) ? 'GRANTED' : 'DENIED');"
+          ]}}]
+        }
+      ]
+    },
+    {
+      "name": "2. Catalog CRUD (Tag) — admin",
+      "item": [
+        {
+          "name": "List tags",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/tags?page=0&size=20", "host": ["{{baseUrl}}"], "path": ["api","tags"], "query": [{"key":"page","value":"0"},{"key":"size","value":"20"}] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200', () => pm.response.to.have.status(200));"
+          ]}}]
+        },
+        {
+          "name": "Create tag",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/tags", "host": ["{{baseUrl}}"], "path": ["api","tags"] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"qa-tag\",\n  \"slug\": \"qa-tag\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('201', () => pm.response.to.have.status(201));",
+            "const j = pm.response.json();",
+            "if (j.id) pm.collectionVariables.set('tagId', j.id);"
+          ]}}]
+        },
+        {
+          "name": "Get tag by id",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/tags/{{tagId}}", "host": ["{{baseUrl}}"], "path": ["api","tags","{{tagId}}"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200', () => pm.response.to.have.status(200));"
+          ]}}]
+        },
+        {
+          "name": "Update tag",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/tags/{{tagId}}", "host": ["{{baseUrl}}"], "path": ["api","tags","{{tagId}}"] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"qa-tag-updated\",\n  \"slug\": \"qa-tag\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200', () => pm.response.to.have.status(200));"
+          ]}}]
+        },
+        {
+          "name": "Delete tag",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/tags/{{tagId}}", "host": ["{{baseUrl}}"], "path": ["api","tags","{{tagId}}"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('204', () => pm.response.to.have.status(204));"
+          ]}}]
+        }
+      ]
+    },
+    {
+      "name": "3. Catalog (Domain + Organization)",
+      "item": [
+        {
+          "name": "List domains",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/domains?page=0&size=20", "host": ["{{baseUrl}}"], "path": ["api","domains"], "query": [{"key":"page","value":"0"},{"key":"size","value":"20"}] }
+          }
+        },
+        {
+          "name": "Create domain",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/domains", "host": ["{{baseUrl}}"], "path": ["api","domains"] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"qa-domain\",\n  \"slug\": \"qa-domain\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "if (pm.response.code === 201) pm.collectionVariables.set('domainId', pm.response.json().id);"
+          ]}}]
+        },
+        {
+          "name": "Delete domain",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/domains/{{domainId}}", "host": ["{{baseUrl}}"], "path": ["api","domains","{{domainId}}"] }
+          }
+        },
+        {
+          "name": "List organizations",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/app/organizations?page=0&size=20", "host": ["{{baseUrl}}"], "path": ["api","app","organizations"], "query": [{"key":"page","value":"0"},{"key":"size","value":"20"}] }
+          }
+        },
+        {
+          "name": "Create organization",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/app/organizations", "host": ["{{baseUrl}}"], "path": ["api","app","organizations"] },
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"qa-org\",\n  \"slug\": \"qa-org\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "if (pm.response.code === 201) pm.collectionVariables.set('organizationId', pm.response.json().id);"
+          ]}}]
+        }
+      ]
+    },
+    {
+      "name": "4. Meta module",
+      "item": [
+        {
+          "name": "List meta-sources",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/meta-sources?page=0&size=20", "host": ["{{baseUrl}}"], "path": ["api","meta-sources"], "query": [{"key":"page","value":"0"},{"key":"size","value":"20"}] }
+          }
+        },
+        {
+          "name": "List meta-sets",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/meta-sets?page=0&size=20", "host": ["{{baseUrl}}"], "path": ["api","meta-sets"], "query": [{"key":"page","value":"0"},{"key":"size","value":"20"}] }
+          }
+        },
+        {
+          "name": "List meta-syncs",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/meta-syncs?page=0&size=20", "host": ["{{baseUrl}}"], "path": ["api","meta-syncs"], "query": [{"key":"page","value":"0"},{"key":"size","value":"20"}] }
+          }
+        },
+        {
+          "name": "List meta-set-versions (by code & version)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/meta-set-versions/by-code-and-version?code=demo&version=1", "host": ["{{baseUrl}}"], "path": ["api","meta-set-versions","by-code-and-version"], "query": [{"key":"code","value":"demo"},{"key":"version","value":"1"}] }
+          }
+        },
+        {
+          "name": "List metapacks",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/v1/metapacks?page=0&size=20", "host": ["{{baseUrl}}"], "path": ["api","v1","metapacks"], "query": [{"key":"page","value":"0"},{"key":"size","value":"20"}] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Admin starter (/api/admin/sec/**) — ROLE_ADMIN",
+      "item": [
+        {
+          "name": "List sec/roles",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/sec/roles", "host": ["{{baseUrl}}"], "path": ["api","admin","sec","roles"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200', () => pm.response.to.have.status(200));"
+          ]}}]
+        },
+        {
+          "name": "Get role ROLE_ADMIN",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/sec/roles/ROLE_ADMIN", "host": ["{{baseUrl}}"], "path": ["api","admin","sec","roles","ROLE_ADMIN"] }
+          }
+        },
+        {
+          "name": "List sec/permissions",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/sec/permissions", "host": ["{{baseUrl}}"], "path": ["api","admin","sec","permissions"] }
+          }
+        },
+        {
+          "name": "Sec catalog (entities)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/sec/catalog", "host": ["{{baseUrl}}"], "path": ["api","admin","sec","catalog"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Liệt kê các @SecuredEntity', () => pm.response.to.have.status(200));",
+            "const arr = pm.response.json();",
+            "console.log('Secured entities:', Array.isArray(arr) ? arr.length : 0);"
+          ]}}]
+        },
+        {
+          "name": "List menu-definitions",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/sec/menu-definitions", "host": ["{{baseUrl}}"], "path": ["api","admin","sec","menu-definitions"] }
+          }
+        },
+        {
+          "name": "List menu-permissions",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }],
+            "url": { "raw": "{{baseUrl}}/api/admin/sec/menu-permissions", "host": ["{{baseUrl}}"], "path": ["api","admin","sec","menu-permissions"] }
+          }
+        },
+        {
+          "name": "Cấp permission Tag READ cho ROLE_USER",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{adminAccessToken}}" }
+            ],
+            "url": { "raw": "{{baseUrl}}/api/admin/sec/permissions", "host": ["{{baseUrl}}"], "path": ["api","admin","sec","permissions"] },
+            "body": { "mode": "raw", "raw": "{\n  \"role\": \"ROLE_USER\",\n  \"entityCode\": \"tag\",\n  \"action\": \"READ\",\n  \"scope\": \"ALL\"\n}" },
+            "description": "Payload ví dụ — kiểm tra response của 'List sec/permissions' để biết đúng schema DTO của starter rồi điều chỉnh."
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "console.log('Status:', pm.response.code, 'Body:', pm.response.text());",
+            "pm.test('Tạo 201 hoặc 200 (đã có) hoặc 400 nếu schema khác', () => pm.expect([200,201,400,409]).to.include(pm.response.code));"
+          ]}}]
+        }
+      ]
+    },
+    {
+      "name": "6. Negative cases",
+      "item": [
+        {
+          "name": "Login sai password (401)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api","auth","login"] },
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"{{username}}\",\n  \"password\": \"wrong\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('401', () => pm.response.to.have.status(401));"
+          ]}}]
+        },
+        {
+          "name": "Refresh token đã bị revoke (400/401)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": { "raw": "{{baseUrl}}/api/auth/refresh", "host": ["{{baseUrl}}"], "path": ["api","auth","refresh"] },
+            "body": { "mode": "raw", "raw": "{\n  \"refreshToken\": \"{{userRefreshToken}}\"\n}" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('4xx', () => pm.expect(pm.response.code).to.be.oneOf([400,401]));"
+          ]}}]
+        },
+        {
+          "name": "Token rác → /api/authenticate (401)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer this.is.garbage" }],
+            "url": { "raw": "{{baseUrl}}/api/authenticate", "host": ["{{baseUrl}}"], "path": ["api","authenticate"] }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('401', () => pm.response.to.have.status(401));"
+          ]}}]
+        }
+      ]
+    }
+  ]
+}
